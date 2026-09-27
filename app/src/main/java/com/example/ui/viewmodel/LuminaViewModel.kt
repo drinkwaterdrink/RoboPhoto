@@ -8,7 +8,6 @@ import com.example.data.local.AiAuditLogEntity
 import com.example.data.local.CleanupRuleEntity
 import com.example.data.local.PhotoCategory
 import com.example.data.local.PhotoEntity
-import com.example.data.local.ScreenshotSubType
 import com.example.data.local.TriageStatus
 import com.example.data.repository.LuminaRepository
 import com.example.domain.ai.AiAdapterConfig
@@ -27,11 +26,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class AppDestination(val route: String, val label: String) {
-    QUEUES("queues", "Queues"),
-    SWIPE_DECK("swipe_deck", "Swipe Deck"),
-    CLUSTERS("clusters", "Clusters"),
-    AI_RULES("ai_rules", "AI Rules"),
-    TRASH_VAULT("trash_vault", "Vault")
+    QUEUES("queues", "Home"),
+    SWIPE_DECK("swipe_deck", "Review"),
+    CLUSTERS("clusters", "Collections"),
+    AI_RULES("ai_rules", "Automations"),
+    TRASH_VAULT("trash_vault", "Review Bin")
 }
 
 data class SmartCleanupBatch(
@@ -87,10 +86,13 @@ data class LuminaUiState(
     val searchQuery: String = "",
     val selectedCategoryFilter: PhotoCategory? = null,
     val activeQueueIdForSwipe: String? = null,
+    val skippedPhotoIds: Set<Long> = emptySet(),
     val lastUndoRecord: UndoTriageRecord? = null,
     val sprintState: SprintSessionState = SprintSessionState(),
-    val goalTargetMegabytes: Int = 28,
-    val currentGoalPlan: GoalCleanupPlan? = null
+    val goalTargetMegabytes: Int = 50,
+    val currentGoalPlan: GoalCleanupPlan? = null,
+    val sessionSavedBytes: Long = 0L,
+    val sessionReviewedCount: Int = 0
 ) {
     val totalLibraryBytes: Long
         get() = allPhotos.sumOf { it.fileSizeBytes }
@@ -100,8 +102,18 @@ data class LuminaUiState(
 
     val potentialQueueSavingsBytes: Long
         get() = activePhotos
-            .filter { it.junkConfidence >= 0.65f && !it.isBestShotInCluster && !it.sentimentalProtected }
+            .filter {
+                (it.junkConfidence >= 0.60f || (it.duplicateClusterId != null && !it.isBestShotInCluster)) &&
+                    !it.isBestShotInCluster &&
+                    !it.sentimentalProtected
+            }
             .sumOf { it.fileSizeBytes }
+
+    val totalCleanableBytes: Long
+        get() = potentialQueueSavingsBytes + vaultRecoverableBytes
+
+    val unreviewedCount: Int
+        get() = activePhotos.count { it.triageStatusEnum == TriageStatus.UNREVIEWED }
 }
 
 class LuminaViewModel(
@@ -116,10 +128,13 @@ class LuminaViewModel(
     private val _searchQuery = MutableStateFlow("")
     private val _selectedCategory = MutableStateFlow<PhotoCategory?>(null)
     private val _activeSwipeQueueId = MutableStateFlow<String?>(null)
+    private val _skippedPhotoIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _aiConfig = MutableStateFlow(repository.loadAiConfig())
     private val _lastUndo = MutableStateFlow<UndoTriageRecord?>(null)
     private val _sprintState = MutableStateFlow(SprintSessionState())
-    private val _goalTargetMb = MutableStateFlow(28)
+    private val _goalTargetMb = MutableStateFlow(50)
+    private val _sessionSavedBytes = MutableStateFlow(0L)
+    private val _sessionReviewedCount = MutableStateFlow(0)
 
     private var sprintTimerJob: Job? = null
 
@@ -136,10 +151,13 @@ class LuminaViewModel(
         val query: String,
         val category: PhotoCategory?,
         val swipeQueueId: String?,
+        val skippedIds: Set<Long>,
         val aiCfg: AiAdapterConfig,
         val undo: UndoTriageRecord?,
         val sprint: SprintSessionState,
-        val goalMb: Int
+        val goalMb: Int,
+        val sessionSaved: Long,
+        val sessionReviewed: Int
     )
 
     private val coreBundleFlow = combine(
@@ -152,20 +170,30 @@ class LuminaViewModel(
     }
 
     private val filterBundleFlow = combine(
-        combine(_isScanning, _statusMessage, _searchQuery) { a, b, c -> Triple(a, b, c) },
-        combine(_selectedCategory, _activeSwipeQueueId, _aiConfig) { d, e, f -> Triple(d, e, f) },
-        combine(_lastUndo, _sprintState, _goalTargetMb) { g, h, i -> Triple(g, h, i) }
+        combine(_isScanning, _statusMessage, _searchQuery, _selectedCategory) { a, b, c, d ->
+            listOf(a, b, c, d)
+        },
+        combine(_activeSwipeQueueId, _skippedPhotoIds, _aiConfig, _lastUndo) { e, f, g, h ->
+            listOf(e, f, g, h)
+        },
+        combine(_sprintState, _goalTargetMb, _sessionSavedBytes, _sessionReviewedCount) { i, j, k, l ->
+            listOf(i, j, k, l)
+        }
     ) { first, second, third ->
+        @Suppress("UNCHECKED_CAST")
         FilterStateBundle(
-            isScanning = first.first,
-            banner = first.second,
-            query = first.third,
-            category = second.first,
-            swipeQueueId = second.second,
-            aiCfg = second.third,
-            undo = third.first,
-            sprint = third.second,
-            goalMb = third.third
+            isScanning = first[0] as Boolean,
+            banner = first[1] as String?,
+            query = first[2] as String,
+            category = first[3] as PhotoCategory?,
+            swipeQueueId = second[0] as String?,
+            skippedIds = second[1] as Set<Long>,
+            aiCfg = second[2] as AiAdapterConfig,
+            undo = second[3] as UndoTriageRecord?,
+            sprint = third[0] as SprintSessionState,
+            goalMb = third[1] as Int,
+            sessionSaved = third[2] as Long,
+            sessionReviewed = third[3] as Int
         )
     }
 
@@ -205,10 +233,13 @@ class LuminaViewModel(
             searchQuery = filter.query,
             selectedCategoryFilter = filter.category,
             activeQueueIdForSwipe = filter.swipeQueueId,
+            skippedPhotoIds = filter.skippedIds,
             lastUndoRecord = filter.undo,
             sprintState = filter.sprint,
             goalTargetMegabytes = filter.goalMb,
-            currentGoalPlan = goalPlan
+            currentGoalPlan = goalPlan,
+            sessionSavedBytes = filter.sessionSaved,
+            sessionReviewedCount = filter.sessionReviewed
         )
     }.stateIn(
         scope = viewModelScope,
@@ -230,7 +261,13 @@ class LuminaViewModel(
 
     fun openQueueInSwipeDeck(queueId: String?) {
         _activeSwipeQueueId.value = queueId
+        _skippedPhotoIds.value = emptySet()
         _currentDestination.value = AppDestination.SWIPE_DECK
+    }
+
+    fun openCategoryInCollections(category: PhotoCategory?) {
+        _selectedCategory.value = category
+        _currentDestination.value = AppDestination.CLUSTERS
     }
 
     fun updateSearchQuery(query: String) {
@@ -248,17 +285,17 @@ class LuminaViewModel(
     fun triggerLibraryRescan() {
         viewModelScope.launch {
             _isScanning.value = true
-            _statusMessage.value = "Scanning phone photos & videos (dHash/pHash, Laplacian sharpness & clustering)..."
-            delay(250)
+            _statusMessage.value = "Scanning phone photos & videos..."
+            delay(200)
             val newCount = repository.rescanAndClusterLibrary()
             _isScanning.value = false
             val totalNow = uiState.value.allPhotos.size
             _statusMessage.value = if (newCount > 0) {
-                "Indexed $newCount new photo(s)/video(s) • $totalNow total in library."
+                "Added $newCount new item(s) • $totalNow total in library."
             } else if (totalNow > 0) {
-                "Forensics scan complete ($totalNow items) • Cache hit rate ${repository.encryptedCache.hitRatePercent()}%"
+                "Library up to date ($totalNow items)."
             } else {
-                "No local media found yet. Tap 'Scan Phone' to grant photo/video access or 'Google Photos' to pick cloud media."
+                "Grant photo & video permission or pick from Google Photos to begin."
             }
         }
     }
@@ -267,17 +304,38 @@ class LuminaViewModel(
         if (uris.isEmpty()) return
         viewModelScope.launch {
             _isScanning.value = true
-            _statusMessage.value = "Analyzing ${uris.size} photo(s)/video(s) with on-device dHash & Laplacian variance..."
+            _statusMessage.value = "Importing ${uris.size} item(s)..."
             val count = repository.importPhotosFromPicker(uris)
             _isScanning.value = false
-            _statusMessage.value = "Imported & clustered $count photo(s)/video(s) into local database."
+            _statusMessage.value = "Imported $count photo(s)/video(s)."
         }
     }
 
+    fun skipPhotoInReview(photo: PhotoEntity) {
+        _skippedPhotoIds.value = _skippedPhotoIds.value + photo.id
+    }
+
+    fun clearSkippedPhotos() {
+        _skippedPhotoIds.value = emptySet()
+    }
+
+    /**
+     * Identity-verified swipe triage: verifies both `photo.id` and `photo.uriString` before updating
+     * the database so the item shown on the card is guaranteed to be the item acted upon.
+     */
     fun swipeTriagePhoto(photo: PhotoEntity, targetStatus: TriageStatus) {
         viewModelScope.launch {
             val prevStatus = photo.triageStatusEnum
-            repository.triagePhoto(photo.id, targetStatus)
+            val verified = repository.triagePhotoVerified(photo, targetStatus)
+            if (!verified) {
+                repository.triagePhoto(photo.id, targetStatus)
+            }
+
+            _sessionReviewedCount.value += 1
+            if (targetStatus == TriageStatus.TRASH_VAULT) {
+                _sessionSavedBytes.value += photo.fileSizeBytes
+            }
+
             _lastUndo.value = UndoTriageRecord(
                 photoIds = listOf(photo.id),
                 previousStatuses = mapOf(photo.id to prevStatus),
@@ -295,7 +353,7 @@ class LuminaViewModel(
                 )
                 if (nextCount >= cur.targetCount) {
                     sprintTimerJob?.cancel()
-                    _statusMessage.value = "5-Minute Cleanup Sprint Complete! Reviewed $nextCount photos."
+                    _statusMessage.value = "Cleanup Sprint Complete! Reviewed $nextCount items."
                 }
             }
         }
@@ -305,13 +363,16 @@ class LuminaViewModel(
         if (photos.isEmpty()) return
         viewModelScope.launch {
             val prevMap = photos.associate { it.id to it.triageStatusEnum }
-            repository.triageBatch(photos.map { it.id }, TriageStatus.TRASH_VAULT)
+            val movedCount = repository.triageBatchVerified(photos, TriageStatus.TRASH_VAULT)
+            val movedBytes = photos.sumOf { it.fileSizeBytes }
+            _sessionSavedBytes.value += movedBytes
+            _sessionReviewedCount.value += movedCount
             _lastUndo.value = UndoTriageRecord(
                 photoIds = photos.map { it.id },
                 previousStatuses = prevMap,
-                description = "$reasonLabel (${photos.size} items moved to Quarantine Vault)"
+                description = "$reasonLabel ($movedCount moved to Review Bin)"
             )
-            _statusMessage.value = "Moved ${photos.size} items to reversible Quarantine Vault."
+            _statusMessage.value = "Moved $movedCount item(s) (${formatBytes(movedBytes)}) to Review Bin."
         }
     }
 
@@ -330,7 +391,7 @@ class LuminaViewModel(
         if (photoIds.isEmpty()) return
         viewModelScope.launch {
             repository.triageBatch(photoIds, TriageStatus.UNREVIEWED)
-            _statusMessage.value = "Restored ${photoIds.size} item(s) from Quarantine Vault."
+            _statusMessage.value = "Restored ${photoIds.size} item(s) from Review Bin."
         }
     }
 
@@ -338,16 +399,36 @@ class LuminaViewModel(
         if (vaultPhotos.isEmpty()) return
         viewModelScope.launch {
             val bytes = vaultPhotos.sumOf { it.fileSizeBytes }
-            val count = vaultPhotos.size
-            repository.permanentlyDeleteVaultItems(vaultPhotos)
-            _statusMessage.value = "Permanently purged $count item(s) • Freed ${formatBytes(bytes)}."
+            val deletedCount = repository.permanentlyDeleteVaultItems(vaultPhotos)
+            _statusMessage.value = "Permanently deleted $deletedCount item(s) • Freed ${formatBytes(bytes)}."
+        }
+    }
+
+    fun renameDuplicateCluster(clusterId: String, newTitle: String) {
+        viewModelScope.launch {
+            repository.renameDuplicateCluster(clusterId, newTitle)
+            _statusMessage.value = "Renamed group to \"${newTitle.trim()}\""
+        }
+    }
+
+    fun markPhotoNotDuplicate(photo: PhotoEntity) {
+        viewModelScope.launch {
+            repository.markPhotoNotDuplicate(photo)
+            _statusMessage.value = "Removed \"${photo.title}\" from duplicate group."
+        }
+    }
+
+    fun selectBestShotInCluster(clusterId: String, photoId: Long) {
+        viewModelScope.launch {
+            repository.selectBestShotInCluster(clusterId, photoId)
+            _statusMessage.value = "Updated Best Shot selection."
         }
     }
 
     fun startFiveMinuteSprint() {
         sprintTimerJob?.cancel()
         val unreviewedCount = uiState.value.activePhotos.count { it.triageStatusEnum == TriageStatus.UNREVIEWED }
-        val target = minOf(50, maxOf(5, unreviewedCount))
+        val target = minOf(30, maxOf(5, unreviewedCount))
         _sprintState.value = SprintSessionState(
             isActive = true,
             remainingSeconds = 300,
@@ -356,6 +437,7 @@ class LuminaViewModel(
             recoveredBytesInSprint = 0L
         )
         _activeSwipeQueueId.value = null
+        _skippedPhotoIds.value = emptySet()
         _currentDestination.value = AppDestination.SWIPE_DECK
 
         sprintTimerJob = viewModelScope.launch {
@@ -374,14 +456,14 @@ class LuminaViewModel(
     }
 
     fun updateGoalTargetMb(megabytes: Int) {
-        _goalTargetMb.value = megabytes.coerceIn(5, 250)
+        _goalTargetMb.value = megabytes.coerceIn(5, 500)
     }
 
     fun createNaturalLanguageRule(prompt: String) {
         if (prompt.isBlank()) return
         viewModelScope.launch {
             val created = repository.addNaturalLanguageRule(prompt)
-            _statusMessage.value = "Created AI Rule: ${created.title}"
+            _statusMessage.value = "Created automation: ${created.title}"
         }
     }
 
@@ -401,7 +483,7 @@ class LuminaViewModel(
         viewModelScope.launch {
             repository.saveAiConfig(newConfig)
             _aiConfig.value = newConfig
-            _statusMessage.value = "Activated BYOK Profile: ${newConfig.activeProfileName} (${newConfig.selectedModel})"
+            _statusMessage.value = "Saved AI profile: ${newConfig.activeProfileName} (${newConfig.selectedModel})"
         }
     }
 
@@ -410,7 +492,7 @@ class LuminaViewModel(
             _isScanning.value = true
             val updated = repository.inspectPhotoWithByokAi(photo, uiState.value.totalApiSpendUsd)
             _isScanning.value = false
-            _statusMessage.value = "Inspected ${updated.title} via ${updated.analyzedByProvider}"
+            _statusMessage.value = "Analyzed ${updated.title}"
         }
     }
 
@@ -419,17 +501,17 @@ class LuminaViewModel(
             val unreviewed = uiState.value.activePhotos.filter { it.triageStatusEnum == TriageStatus.UNREVIEWED }
             if (unreviewed.isEmpty()) return@launch
             _isScanning.value = true
-            _statusMessage.value = "Running BYOK AI & Encrypted Cache inspection on ${unreviewed.size} items..."
+            _statusMessage.value = "Running AI analysis on ${minOf(12, unreviewed.size)} items..."
             val count = repository.runBatchAiInspection(unreviewed, uiState.value.totalApiSpendUsd)
             _isScanning.value = false
-            _statusMessage.value = "Analyzed $count photos (${repository.encryptedCache.hitRatePercent()}% encrypted cache hit rate)."
+            _statusMessage.value = "AI analysis complete for $count items."
         }
     }
 
     fun clearEncryptedCache() {
         viewModelScope.launch {
             repository.clearEncryptedAnalysisCache()
-            _statusMessage.value = "Cleared encrypted analysis cache (API keys & rules preserved)."
+            _statusMessage.value = "Cleared analysis cache (API keys & rules preserved)."
         }
     }
 
@@ -448,80 +530,80 @@ class LuminaViewModel(
     private fun buildSmartBatches(activePhotos: List<PhotoEntity>): List<SmartCleanupBatch> {
         val unreviewed = activePhotos.filter { it.triageStatusEnum == TriageStatus.UNREVIEWED }
 
-        val oldScreenshots = unreviewed.filter {
-            (it.categoryEnum == PhotoCategory.SCREENSHOT || it.categoryEnum == PhotoCategory.MEME) &&
-                it.ageInDays >= 90 &&
-                !it.screenshotSubTypeEnum.isImportantDefault
-        }
-
-        val blurryPhotos = unreviewed.filter {
-            it.categoryEnum == PhotoCategory.BLURRY || it.sharpnessScore < 42
-        }
-
         val duplicateExtras = unreviewed.filter {
             it.duplicateClusterId != null && !it.isBestShotInCluster
         }
 
-        val videoItems = unreviewed.filter {
-            it.isVideo || it.categoryEnum == PhotoCategory.VIDEO
+        val screenshots = unreviewed.filter {
+            (it.categoryEnum == PhotoCategory.SCREENSHOT || it.categoryEnum == PhotoCategory.MEME) &&
+                !it.screenshotSubTypeEnum.isImportantDefault
         }
 
-        val receiptsAndConfirmations = activePhotos.filter {
-            it.categoryEnum == PhotoCategory.RECEIPT ||
+        val blurryPhotos = unreviewed.filter {
+            !it.isVideo && (it.categoryEnum == PhotoCategory.BLURRY || it.sharpnessScore < 42)
+        }
+
+        val videoItems = unreviewed.filter {
+            it.isVideo || it.categoryEnum == PhotoCategory.VIDEO
+        }.sortedByDescending { it.fileSizeBytes }
+
+        val downloadsAndDocs = activePhotos.filter {
+            it.categoryEnum == PhotoCategory.DOWNLOAD ||
+                it.categoryEnum == PhotoCategory.RECEIPT ||
                 it.categoryEnum == PhotoCategory.DOCUMENT ||
                 it.screenshotSubTypeEnum.isImportantDefault
         }
 
         return listOfNotNull(
             SmartCleanupBatch(
-                id = "queue_videos",
-                title = "${videoItems.size} videos consuming high storage",
-                subtitle = "Video clips & screen recordings • Review keyframes & duration",
-                badgeText = "High Storage Impact",
-                spineColorHex = 0xFFEC4899,
-                photos = videoItems,
-                totalBytes = videoItems.sumOf { it.fileSizeBytes },
-                averageConfidence = if (videoItems.isEmpty()) 0.72f else videoItems.map { it.junkConfidence }.average().toFloat()
+                id = "queue_duplicates",
+                title = "Duplicates & Similar",
+                subtitle = "${duplicateExtras.size} extra shots • Best shots safely kept",
+                badgeText = formatBytes(duplicateExtras.sumOf { it.fileSizeBytes }),
+                spineColorHex = 0xFF168BFF,
+                photos = duplicateExtras,
+                totalBytes = duplicateExtras.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.90f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
                 id = "queue_old_screenshots",
-                title = "${oldScreenshots.size} screenshots probably no longer useful",
-                subtitle = "Older than 90 days • Excludes receipts, passwords, addresses & confirmations",
-                badgeText = "High Confidence",
-                spineColorHex = 0xFF06B6D4,
-                photos = oldScreenshots,
-                totalBytes = oldScreenshots.sumOf { it.fileSizeBytes },
-                averageConfidence = if (oldScreenshots.isEmpty()) 0.92f else oldScreenshots.map { it.junkConfidence }.average().toFloat()
+                title = "Screenshots",
+                subtitle = "${screenshots.size} screen captures ready to clean",
+                badgeText = formatBytes(screenshots.sumOf { it.fileSizeBytes }),
+                spineColorHex = 0xFF38BDF8,
+                photos = screenshots,
+                totalBytes = screenshots.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.88f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
-                id = "queue_duplicates",
-                title = "${duplicateExtras.size} near-duplicate burst extras",
-                subtitle = "64-bit dHash/pHash matched • Sharpest Best-Shot automatically locked",
-                badgeText = "Best-Shot Safe",
-                spineColorHex = 0xFFF59E0B,
-                photos = duplicateExtras,
-                totalBytes = duplicateExtras.sumOf { it.fileSizeBytes },
-                averageConfidence = 0.89f
+                id = "queue_videos",
+                title = "Large Videos",
+                subtitle = "${videoItems.size} video clips sorted by size",
+                badgeText = formatBytes(videoItems.sumOf { it.fileSizeBytes }),
+                spineColorHex = 0xFF818CF8,
+                photos = videoItems,
+                totalBytes = videoItems.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.76f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
                 id = "queue_blurry",
-                title = "${blurryPhotos.size} blurry & misfocused photos",
-                subtitle = "Laplacian variance sharpness < 42/100 • Motion blur or pocket triggers",
-                badgeText = "96% Junk Confidence",
-                spineColorHex = 0xFFF43F5E,
+                title = "Blurry Photos",
+                subtitle = "${blurryPhotos.size} low-sharpness or misfocused shots",
+                badgeText = formatBytes(blurryPhotos.sumOf { it.fileSizeBytes }),
+                spineColorHex = 0xFFE5484D,
                 photos = blurryPhotos,
                 totalBytes = blurryPhotos.sumOf { it.fileSizeBytes },
-                averageConfidence = 0.96f
+                averageConfidence = 0.94f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
                 id = "queue_receipts_protected",
-                title = "${receiptsAndConfirmations.size} receipts, credentials & confirmations",
-                subtitle = "OCR detected invoices, serial numbers, passwords & booking codes",
-                badgeText = "Protected Vault",
+                title = "Documents & Downloads",
+                subtitle = "${downloadsAndDocs.size} receipts, documents & saved files",
+                badgeText = formatBytes(downloadsAndDocs.sumOf { it.fileSizeBytes }),
                 spineColorHex = 0xFF10B981,
-                photos = receiptsAndConfirmations,
-                totalBytes = receiptsAndConfirmations.sumOf { it.fileSizeBytes },
-                averageConfidence = 0.12f
+                photos = downloadsAndDocs,
+                totalBytes = downloadsAndDocs.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.15f
             ).takeIf { it.photos.isNotEmpty() }
         )
     }
@@ -533,26 +615,32 @@ class LuminaViewModel(
             .values
             .filter { it.size > 1 }
             .map { members ->
-                val sorted = members.sortedByDescending {
-                    if (it.isBestShotInCluster) 10_000 else it.overallQualityScore
-                }
+                val sorted = members.sortedWith(
+                    compareByDescending<PhotoEntity> { if (it.isBestShotInCluster) 1 else 0 }
+                        .thenByDescending { it.overallQualityScore }
+                        .thenByDescending { it.sharpnessScore }
+                )
                 val best = sorted.first()
                 val redundant = sorted.drop(1)
-                val clusterTitle = when {
-                    best.categoryEnum == PhotoCategory.PLANT -> "August Botanical Plant Burst (${members.size} shots)"
-                    best.categoryEnum == PhotoCategory.PET -> "Golden Retriever Outdoor Burst (${members.size} shots)"
-                    best.categoryEnum == PhotoCategory.LANDSCAPE -> "Golden Hour Alpine Lake Burst (${members.size} shots)"
-                    else -> "${best.categoryEnum.label} Similarity Cluster (${members.size} shots)"
+                val customTitle = members.firstNotNullOfOrNull {
+                    it.clusterTitleOverride.takeIf { t -> t.isNotBlank() }
+                }
+                val dateSuffix = best.shortDateLabel.let { if (it.isNotBlank()) " • $it" else "" }
+                val defaultTitle = when {
+                    best.isVideo -> "Similar Videos$dateSuffix (${members.size})"
+                    best.categoryEnum == PhotoCategory.SCREENSHOT -> "Similar Screenshots$dateSuffix (${members.size})"
+                    else -> "${best.folderName.ifBlank { "Photo" }} Burst$dateSuffix (${members.size})"
                 }
                 DuplicateClusterGroup(
                     clusterId = best.duplicateClusterId ?: "cluster",
-                    title = clusterTitle,
+                    title = customTitle ?: defaultTitle,
                     bestShot = best,
                     redundantVariants = redundant,
                     allMembers = sorted,
                     recoverableBytes = redundant.sumOf { it.fileSizeBytes }
                 )
             }
+            .sortedByDescending { it.recoverableBytes }
     }
 
     companion object {

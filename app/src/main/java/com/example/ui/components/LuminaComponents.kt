@@ -1,11 +1,15 @@
 package com.example.ui.components
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
+import android.util.LruCache
 import android.util.Size
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,41 +30,49 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import coil.ImageLoader
 import coil.compose.AsyncImage
+import coil.request.CachePolicy
 import coil.request.ImageRequest
+import com.example.data.local.PhotoCategory
 import com.example.data.local.PhotoEntity
-import com.example.data.local.TriageStatus
 import com.example.ui.theme.CardBorderSlate
 import com.example.ui.theme.CharcoalSurface
 import com.example.ui.theme.ElevatedSlate
+import com.example.ui.theme.KeepEmerald
+import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SpineAmber
 import com.example.ui.theme.SpineBlue
 import com.example.ui.theme.SpineCoral
@@ -70,21 +82,146 @@ import com.example.ui.theme.SpineViolet
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
-import com.example.ui.viewmodel.LuminaViewModel
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private val videoThumbMemoryCache = ConcurrentHashMap<String, Bitmap>()
+/**
+ * Thread-safe LRU cache keyed strictly by `PhotoEntity.stableIdentityKey`
+ * (`"${id}_${uriString}_${fileSizeBytes}_${dateTakenEpochMs}"`).
+ * Prevents any cross-item thumbnail collisions across lists, clusters, or swipe decks.
+ */
+object MediaThumbnailIdentityCache {
+    private val cache = object : LruCache<String, Bitmap>(96) {}
+
+    @Synchronized
+    fun get(identityKey: String): Bitmap? = cache.get(identityKey)
+
+    @Synchronized
+    fun put(identityKey: String, bitmap: Bitmap) {
+        cache.put(identityKey, bitmap)
+    }
+
+    @Synchronized
+    fun evict(identityKey: String) {
+        cache.remove(identityKey)
+    }
+}
 
 /**
- * Tactile dark-charcoal card with a purposeful left colored spine inspired by ColorNote productivity layouts.
+ * Extracts or decodes an exact thumbnail for [photo] and stores it in [MediaThumbnailIdentityCache]
+ * under [PhotoEntity.stableIdentityKey].
+ */
+suspend fun loadVerifiedThumbnailBitmap(context: Context, photo: PhotoEntity, targetPx: Int = 420): Bitmap? {
+    val cacheKey = photo.stableIdentityKey
+    MediaThumbnailIdentityCache.get(cacheKey)?.let { return it }
+
+    return withContext(Dispatchers.IO) {
+        MediaThumbnailIdentityCache.get(cacheKey)?.let { return@withContext it }
+
+        val uri = runCatching { Uri.parse(photo.uriString) }.getOrNull() ?: return@withContext null
+        var loaded: Bitmap? = null
+
+        if (photo.isVideo) {
+            // 1. Primary: FileDescriptor-backed MediaMetadataRetriever for exact per-video frame accuracy
+            val retriever = MediaMetadataRetriever()
+            try {
+                var dsSet = false
+                runCatching {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        retriever.setDataSource(pfd.fileDescriptor)
+                        dsSet = true
+                    }
+                }
+                if (!dsSet) {
+                    retriever.setDataSource(context, uri)
+                }
+                val seekUs = if (photo.durationMs > 2000L) {
+                    minOf(1_500_000L, photo.durationMs * 250L)
+                } else {
+                    300_000L
+                }
+                loaded = retriever.getFrameAtTime(seekUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: retriever.frameAtTime
+            } catch (_: Exception) {
+                // Fallback below
+            } finally {
+                runCatching { retriever.release() }
+            }
+
+            // 2. Fallback: ContentResolver.loadThumbnail
+            if (loaded == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                runCatching {
+                    loaded = context.contentResolver.loadThumbnail(uri, Size(targetPx, targetPx), null)
+                }
+            }
+        } else {
+            // Still Image: ContentResolver.loadThumbnail on Android 10+ or sampled stream decode
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri.scheme == "content") {
+                runCatching {
+                    loaded = context.contentResolver.loadThumbnail(uri, Size(targetPx, targetPx), null)
+                }
+            }
+            if (loaded == null) {
+                runCatching {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, bounds)
+                    }
+                    var sample = 1
+                    while ((bounds.outWidth / sample) > targetPx * 2 && (bounds.outHeight / sample) > targetPx * 2) {
+                        sample *= 2
+                    }
+                    val opts = BitmapFactory.Options().apply {
+                        inSampleSize = sample.coerceAtLeast(1)
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        loaded = BitmapFactory.decodeStream(stream, null, opts)
+                    }
+                }
+            }
+        }
+
+        if (loaded != null) {
+            MediaThumbnailIdentityCache.put(cacheKey, loaded!!)
+        }
+        loaded
+    }
+}
+
+/**
+ * Preloads the next 2–3 media items into both [MediaThumbnailIdentityCache] and Coil's memory cache
+ * so swipe transitions and cluster comparisons feel instantaneous.
+ */
+suspend fun preloadUpcomingMediaItems(context: Context, upcoming: List<PhotoEntity>) {
+    withContext(Dispatchers.IO) {
+        val loader = ImageLoader(context)
+        for (item in upcoming.take(3)) {
+            runCatching {
+                loadVerifiedThumbnailBitmap(context, item, targetPx = 640)
+                if (!item.isVideo) {
+                    val req = ImageRequest.Builder(context)
+                        .data(Uri.parse(item.uriString))
+                        .memoryCacheKey(item.stableIdentityKey)
+                        .diskCacheKey(item.stableIdentityKey)
+                        .build()
+                    loader.enqueue(req)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Stealth / Graphite Dark card with restrained 1dp border and subtle left accent bar.
  */
 @Composable
 fun SpineCard(
     spineColor: Color,
     modifier: Modifier = Modifier,
     containerColor: Color = CharcoalSurface,
+    cornerRadius: Dp = 16.dp,
     onClick: (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
@@ -95,10 +232,11 @@ fun SpineCard(
     }
 
     Card(
-        modifier = cardModifier,
-        shape = RoundedCornerShape(14.dp),
+        modifier = cardModifier.fillMaxWidth(),
+        shape = RoundedCornerShape(cornerRadius),
         colors = CardDefaults.cardColors(containerColor = containerColor),
-        border = BorderStroke(1.dp, CardBorderSlate)
+        border = BorderStroke(1.dp, CardBorderSlate),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Row(
             modifier = Modifier
@@ -107,18 +245,42 @@ fun SpineCard(
         ) {
             Box(
                 modifier = Modifier
-                    .width(6.dp)
+                    .width(4.dp)
                     .fillMaxHeight()
-                    .background(spineColor)
+                    .background(spineColor.copy(alpha = 0.85f))
             )
-            Box(
+            Column(
                 modifier = Modifier
                     .weight(1f)
-                    .padding(14.dp)
+                    .padding(16.dp)
             ) {
                 content()
             }
         }
+    }
+}
+
+@Composable
+fun ForensicPillBadge(
+    text: String,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(8.dp),
+        color = accentColor.copy(alpha = 0.14f),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.32f))
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = accentColor,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
     }
 }
 
@@ -128,296 +290,230 @@ fun TelemetryPill(
     accentColor: Color,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
-        shape = RoundedCornerShape(6.dp),
-        color = accentColor.copy(alpha = 0.14f),
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.38f))
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelMedium,
+    ForensicPillBadge(
+        text = text,
+        accentColor = accentColor,
+        modifier = modifier
+    )
+}
+
+@Composable
+fun QualityMeterBar(
+    label: String,
+    score: Int,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary
+            )
+            Text(
+                text = "$score/100",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = accentColor
+            )
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        LinearProgressIndicator(
+            progress = { (score / 100f).coerceIn(0.05f, 1f) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(5.dp)
+                .clip(CircleShape),
             color = accentColor,
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            trackColor = ElevatedSlate
         )
     }
 }
 
+/**
+ * Identity-verified thumbnail renderer for both Photos and Videos.
+ * Strictly keyed on `photo.stableIdentityKey` (`id + uriString + fileSizeBytes + dateTakenEpochMs`)
+ * so thumbnails NEVER bleed or repeat across different items in LazyLists, Grids, or Swipe Decks.
+ */
 @Composable
 fun PhotoThumbnailView(
     photo: PhotoEntity,
     modifier: Modifier = Modifier,
-    cornerRadius: Dp = 12.dp
+    showBadges: Boolean = true
 ) {
-    val context = LocalContext.current
-    val videoBitmap by produceState<Bitmap?>(initialValue = videoThumbMemoryCache[photo.uriString], key1 = photo.uriString) {
-        if (photo.isVideo && value == null) {
-            value = withContext(Dispatchers.IO) {
-                runCatching {
-                    val uri = Uri.parse(photo.uriString)
-                    val loaded = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri.scheme == "content") {
-                        runCatching {
-                            context.contentResolver.loadThumbnail(uri, Size(360, 360), null)
-                        }.getOrNull()
-                    } else null
-                    val finalBmp = loaded ?: run {
-                        val retriever = MediaMetadataRetriever()
-                        retriever.setDataSource(context, uri)
-                        val frame = retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                            ?: retriever.frameAtTime
-                        retriever.release()
-                        frame
-                    }
-                    if (finalBmp != null) {
-                        videoThumbMemoryCache[photo.uriString] = finalBmp
-                    }
-                    finalBmp
-                }.getOrNull()
+    val identityKey = photo.stableIdentityKey
+
+    key(identityKey) {
+        val context = LocalContext.current
+        var asyncImageFailed by remember(identityKey) { mutableStateOf(false) }
+
+        val verifiedBitmap by produceState<Bitmap?>(
+            initialValue = MediaThumbnailIdentityCache.get(identityKey),
+            key1 = identityKey
+        ) {
+            if (value == null && (photo.isVideo || asyncImageFailed)) {
+                value = loadVerifiedThumbnailBitmap(context, photo, targetPx = 480)
             }
         }
-    }
 
-    Box(
-        modifier = modifier
-            .clip(RoundedCornerShape(cornerRadius))
-            .background(ElevatedSlate)
-    ) {
-        if (photo.isVideo && videoBitmap != null) {
-            Image(
-                bitmap = videoBitmap!!.asImageBitmap(),
-                contentDescription = photo.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
-        } else {
-            AsyncImage(
-                model = ImageRequest.Builder(context)
-                    .data(Uri.parse(photo.uriString))
-                    .crossfade(true)
-                    .build(),
-                contentDescription = photo.title,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize()
-            )
+        val imageRequest = remember(identityKey) {
+            ImageRequest.Builder(context)
+                .data(Uri.parse(photo.uriString))
+                .memoryCacheKey(identityKey)
+                .diskCacheKey(identityKey)
+                .memoryCachePolicy(CachePolicy.ENABLED)
+                .diskCachePolicy(CachePolicy.ENABLED)
+                .crossfade(false)
+                .build()
         }
 
-        if (photo.isVideo) {
-            Surface(
-                shape = RoundedCornerShape(6.dp),
-                color = Color.Black.copy(alpha = 0.75f),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(6.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = "Video",
-                        tint = SpineCyan,
-                        modifier = Modifier.size(12.dp)
+        Box(
+            modifier = modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(ElevatedSlate)
+                .border(1.dp, CardBorderSlate, RoundedCornerShape(12.dp))
+        ) {
+            if (photo.isVideo) {
+                if (verifiedBitmap != null) {
+                    Image(
+                        bitmap = verifiedBitmap!!.asImageBitmap(),
+                        contentDescription = photo.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
                     )
-                    Text(
-                        text = photo.formattedDuration,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold
+                } else {
+                    CleanMediaFallbackPlaceholder(photo = photo)
+                }
+            } else {
+                if (!asyncImageFailed) {
+                    AsyncImage(
+                        model = imageRequest,
+                        contentDescription = photo.title,
+                        contentScale = ContentScale.Crop,
+                        onError = { asyncImageFailed = true },
+                        modifier = Modifier.fillMaxSize()
                     )
+                } else if (verifiedBitmap != null) {
+                    Image(
+                        bitmap = verifiedBitmap!!.asImageBitmap(),
+                        contentDescription = photo.title,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    CleanMediaFallbackPlaceholder(photo = photo)
                 }
             }
-        }
-    }
-}
 
-@Composable
-fun ForensicPhotoListItem(
-    photo: PhotoEntity,
-    onPhotoClick: (PhotoEntity) -> Unit,
-    onQuickVaultClick: (PhotoEntity) -> Unit,
-    onQuickKeepClick: (PhotoEntity) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val spineColor = when {
-        photo.isBestShotInCluster -> SpineEmerald
-        photo.sentimentalProtected -> SpineBlue
-        photo.junkConfidence >= 0.78f -> SpineCoral
-        photo.junkConfidence >= 0.45f -> SpineAmber
-        else -> Color(photo.categoryEnum.spineHex)
-    }
-
-    SpineCard(
-        spineColor = spineColor,
-        modifier = modifier
-            .fillMaxWidth()
-            .testTag("photo_card_${photo.id}"),
-        onClick = { onPhotoClick(photo) }
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                PhotoThumbnailView(
-                    photo = photo,
+            // Center Play indicator for Videos
+            if (photo.isVideo && showBadges) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.62f),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.28f)),
                     modifier = Modifier
-                        .size(74.dp)
-                        .border(1.dp, CardBorderSlate, RoundedCornerShape(10.dp)),
-                    cornerRadius = 10.dp
-                )
-
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                        .align(Alignment.Center)
+                        .size(34.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = photo.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = TextPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                        if (photo.isBestShotInCluster) {
-                            Icon(
-                                imageVector = Icons.Filled.Star,
-                                contentDescription = "Best Shot Winner",
-                                tint = SpineEmerald,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        } else if (photo.sentimentalProtected) {
-                            Icon(
-                                imageVector = Icons.Filled.Shield,
-                                contentDescription = "Protected Record",
-                                tint = SpineCyan,
-                                modifier = Modifier.size(15.dp)
-                            )
-                        }
-                    }
-
-                    Text(
-                        text = photo.aiDescription.ifBlank { photo.junkReason },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (photo.isVideo) {
-                            TelemetryPill(
-                                text = "VIDEO • ${photo.formattedDuration}",
-                                accentColor = SpineCyan
-                            )
-                        }
-                        TelemetryPill(
-                            text = LuminaViewModel.formatBytes(photo.fileSizeBytes),
-                            accentColor = TextSecondary
-                        )
-                        TelemetryPill(
-                            text = "Sharp ${photo.sharpnessScore}",
-                            accentColor = if (photo.sharpnessScore >= 70) SpineEmerald else SpineCoral
-                        )
-                        TelemetryPill(
-                            text = "${photo.ageInDays}d old",
-                            accentColor = SpineAmber
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Filled.PlayArrow,
+                            contentDescription = "Video",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
             }
 
-            // Bottom status & 1-tap action strip
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(spineColor)
-                    )
-                    Text(
-                        text = photo.junkReason.ifBlank { photo.categoryEnum.label },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    if (photo.triageStatusEnum != TriageStatus.KEEP) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = SpineEmerald.copy(alpha = 0.14f),
-                            border = BorderStroke(1.dp, SpineEmerald.copy(alpha = 0.4f)),
-                            modifier = Modifier
-                                .clickable { onQuickKeepClick(photo) }
-                                .testTag("quick_keep_${photo.id}")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.CheckCircle,
-                                    contentDescription = "Keep media",
-                                    tint = SpineEmerald,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                Text(
-                                    text = "Keep",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = SpineEmerald
-                                )
-                            }
-                        }
-                    }
-
+            if (showBadges) {
+                // Top-left Best Shot or Protected pill
+                if (photo.isBestShotInCluster) {
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = SpineCoral.copy(alpha = 0.14f),
-                        border = BorderStroke(1.dp, SpineCoral.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(6.dp),
+                        color = KeepEmerald.copy(alpha = 0.92f),
                         modifier = Modifier
-                            .clickable { onQuickVaultClick(photo) }
-                            .testTag("quick_vault_${photo.id}")
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Filled.DeleteOutline,
-                                contentDescription = "Move to Quarantine Vault",
-                                tint = SpineCoral,
-                                modifier = Modifier.size(14.dp)
+                                imageVector = Icons.Filled.CheckCircle,
+                                contentDescription = "Best Shot",
+                                tint = Color(0xFF042016),
+                                modifier = Modifier.size(11.dp)
                             )
                             Text(
-                                text = "Vault",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = SpineCoral
+                                text = "BEST",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF042016),
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                } else if (photo.sentimentalProtected) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = SpineBlue.copy(alpha = 0.90f),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Lock,
+                                contentDescription = "Protected",
+                                tint = Color.White,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Text(
+                                text = "SAFE",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Bottom-start Video Duration pill
+                if (photo.isVideo) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color.Black.copy(alpha = 0.78f),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(6.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Videocam,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Text(
+                                text = photo.formattedDuration,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
                     }
@@ -428,66 +524,70 @@ fun ForensicPhotoListItem(
 }
 
 @Composable
-fun EncryptedCacheBadgeStrip(
-    entriesCount: Int,
-    hitRatePercent: Int,
-    privacyTitle: String,
-    activeProviderLabel: String,
-    onOpenAiHub: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Surface(
-        modifier = modifier
-            .fillMaxWidth()
-            .clickable(onClick = onOpenAiHub)
-            .testTag("encrypted_cache_status_strip"),
-        shape = RoundedCornerShape(12.dp),
-        color = ElevatedSlate,
-        border = BorderStroke(1.dp, CardBorderSlate)
+private fun CleanMediaFallbackPlaceholder(photo: PhotoEntity) {
+    val accent = Color(photo.categoryEnum.spineHex)
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        CharcoalSurface,
+                        ElevatedSlate,
+                        accent.copy(alpha = 0.16f)
+                    )
+                )
+            ),
+        contentAlignment = Alignment.Center
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier.padding(8.dp)
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Lock,
-                    contentDescription = "AES-256 Encrypted Cache",
-                    tint = SpineEmerald,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = "AES-256 Cache: $entriesCount hashes ($hitRatePercent% hit)",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = TextPrimary,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.AutoAwesome,
-                    contentDescription = "BYOK Provider",
-                    tint = SpineViolet,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(
-                    text = "$activeProviderLabel • $privacyTitle",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = SpineViolet,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
+            Icon(
+                imageVector = if (photo.isVideo) Icons.Filled.Videocam else Icons.Filled.BrokenImage,
+                contentDescription = null,
+                tint = TextMuted,
+                modifier = Modifier.size(22.dp)
+            )
+            Text(
+                text = photo.title,
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
+    }
+}
+
+@Composable
+fun CategoryFallbackCanvas(category: PhotoCategory, title: String) {
+    val baseColor = when (category) {
+        PhotoCategory.VIDEO -> SpineBlue
+        PhotoCategory.PLANT -> SpineEmerald
+        PhotoCategory.PET -> SpineAmber
+        PhotoCategory.LANDSCAPE -> SpineBlue
+        PhotoCategory.SCREENSHOT -> SpineCyan
+        PhotoCategory.RECEIPT -> SpineEmerald
+        PhotoCategory.BLURRY -> SpineCoral
+        PhotoCategory.DOCUMENT -> SpineViolet
+        PhotoCategory.DOWNLOAD -> SpineAmber
+        PhotoCategory.MEME -> SpineViolet
+        PhotoCategory.PEOPLE -> SpineCyan
+    }
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        drawRect(
+            brush = Brush.linearGradient(
+                colors = listOf(
+                    CharcoalSurface,
+                    baseColor.copy(alpha = 0.25f),
+                    ObsidianBg
+                ),
+                start = Offset.Zero,
+                end = Offset(size.width, size.height)
+            )
+        )
     }
 }

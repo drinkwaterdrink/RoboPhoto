@@ -10,20 +10,23 @@ import kotlinx.coroutines.flow.Flow
 @Dao
 interface LuminaDao {
 
-    @Query("SELECT * FROM photos ORDER BY dateTakenEpochMs DESC")
+    @Query("SELECT * FROM photos ORDER BY dateTakenEpochMs DESC, id DESC")
     fun observeAllPhotos(): Flow<List<PhotoEntity>>
 
-    @Query("SELECT * FROM photos ORDER BY dateTakenEpochMs DESC")
+    @Query("SELECT * FROM photos ORDER BY dateTakenEpochMs DESC, id DESC")
     suspend fun getAllPhotosOnce(): List<PhotoEntity>
 
-    @Query("SELECT * FROM photos WHERE id = :id LIMIT 1")
-    suspend fun getPhotoById(id: Long): PhotoEntity?
+    @Query("SELECT * FROM photos WHERE id = :photoId LIMIT 1")
+    suspend fun getPhotoById(photoId: Long): PhotoEntity?
+
+    @Query("SELECT * FROM photos WHERE uriString = :uriString LIMIT 1")
+    suspend fun getPhotoByUri(uriString: String): PhotoEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertPhotosIgnoreConflicts(photos: List<PhotoEntity>): List<Long>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPhotos(photos: List<PhotoEntity>)
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPhoto(photo: PhotoEntity): Long
 
     @Update
     suspend fun updatePhoto(photo: PhotoEntity)
@@ -34,22 +37,22 @@ interface LuminaDao {
     @Query("UPDATE photos SET triageStatus = :status, vaultedAtEpochMs = :vaultedAt WHERE id = :photoId")
     suspend fun updateTriageStatus(photoId: Long, status: String, vaultedAt: Long?)
 
+    @Query("UPDATE photos SET triageStatus = :status, vaultedAtEpochMs = :vaultedAt WHERE id = :photoId AND uriString = :expectedUri")
+    suspend fun updateTriageStatusVerified(photoId: Long, expectedUri: String, status: String, vaultedAt: Long?): Int
+
     @Query("UPDATE photos SET triageStatus = :status, vaultedAtEpochMs = :vaultedAt WHERE id IN (:photoIds)")
     suspend fun updateBatchTriageStatus(photoIds: List<Long>, status: String, vaultedAt: Long?)
 
     @Query("DELETE FROM photos WHERE id IN (:photoIds)")
     suspend fun permanentlyDeletePhotosByIds(photoIds: List<Long>)
 
-    @Query("DELETE FROM photos WHERE uriString LIKE '%lumina_sample_media%'")
+    @Query("DELETE FROM photos WHERE id = :photoId AND uriString = :expectedUri")
+    suspend fun permanentlyDeleteVerifiedPhoto(photoId: Long, expectedUri: String): Int
+
+    @Query("DELETE FROM photos WHERE uriString LIKE '%lumina_sample_media%' OR title LIKE 'sample_%'")
     suspend fun deleteLegacySamplePhotos()
 
-    @Query("DELETE FROM photos WHERE triageStatus = 'TRASH_VAULT'")
-    suspend fun emptyTrashVault()
-
-    @Query("SELECT COUNT(*) FROM photos")
-    suspend fun getPhotoCount(): Int
-
-    // Cleanup Rules
+    // Cleanup Rules (Automations)
     @Query("SELECT * FROM cleanup_rules ORDER BY createdAtEpochMs DESC")
     fun observeCleanupRules(): Flow<List<CleanupRuleEntity>>
 
@@ -66,15 +69,12 @@ interface LuminaDao {
     suspend fun deleteCleanupRule(ruleId: Long)
 
     // AI Audit Logs
-    @Query("SELECT * FROM ai_audit_logs ORDER BY timestampEpochMs DESC LIMIT 60")
+    @Query("SELECT * FROM ai_audit_logs ORDER BY timestampEpochMs DESC LIMIT 50")
     fun observeAiAuditLogs(): Flow<List<AiAuditLogEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAiAuditLog(log: AiAuditLogEntity)
 
-    @Query("SELECT COALESCE(SUM(estimatedCostUsd), 0.0) FROM ai_audit_logs WHERE servedFromEncryptedCache = 0")
+    @Query("SELECT COALESCE(SUM(estimatedCostUsd), 0.0) FROM ai_audit_logs")
     fun observeTotalApiSpendUsd(): Flow<Double>
-
-    @Query("DELETE FROM ai_audit_logs")
-    suspend fun clearAiAuditLogs()
 }

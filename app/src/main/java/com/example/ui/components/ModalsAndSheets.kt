@@ -1275,6 +1275,7 @@ fun PhotoForensicsDetailSheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var showRoboLabForensics by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -1311,74 +1312,56 @@ fun PhotoForensicsDetailSheet(
                 }
             }
 
-            PhotoThumbnailView(
-                photo = photo,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(230.dp),
-                cornerRadius = 16.dp
-            )
+            if (photo.isVideo) {
+                IntegratedVideoPlayer(
+                    photo = photo,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(260.dp),
+                    autoPlay = false
+                )
+            } else {
+                PhotoThumbnailView(
+                    photo = photo,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
+                )
+            }
 
-            // Perceptual Hash & Pixel Telemetry Card
+            // Human-Friendly Summary & Quality Card
             SpineCard(
-                spineColor = SpineCyan,
+                spineColor = SpineBlue,
                 containerColor = CharcoalSurface
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = "On-Device Pixel & Hash Forensics",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = SpineCyan
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        TelemetryPill("dHash: ${photo.dHash}", SpineCyan)
-                        TelemetryPill("pHash: ${photo.pHash}", SpineViolet)
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        TelemetryPill("Sharpness: ${photo.sharpnessScore}/100", SpineEmerald)
-                        TelemetryPill("Exposure: ${photo.exposureScore}/100", SpineAmber)
-                        TelemetryPill("Framing: ${photo.framingScore}/100", SpineBlue)
-                    }
-                    Text(
-                        text = "Laplacian Variance: ${String.format(Locale.US, "%.1f", photo.laplacianVariance)} • Analyzed by: ${photo.analyzedByProvider}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextMuted
-                    )
-                }
-            }
-
-            // AI Reasoning & OCR Card
-            SpineCard(
-                spineColor = SpineViolet,
-                containerColor = CharcoalSurface
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "AI Reasoning & OCR Intelligence",
+                            text = "Why This Item Was Flagged",
                             style = MaterialTheme.typography.titleSmall,
-                            color = SpineViolet
+                            color = TextPrimary
                         )
-                        TelemetryPill(
-                            text = "${(photo.junkConfidence * 100).toInt()}% Junk Conf",
-                            accentColor = if (photo.junkConfidence >= 0.7f) SpineCoral else SpineEmerald
+                        ForensicPillBadge(
+                            text = "Quality ${photo.overallQualityScore}/100",
+                            accentColor = if (photo.overallQualityScore >= 70) SpineEmerald else SpineAmber
                         )
                     }
                     Text(
-                        text = photo.aiDescription.ifBlank { "No description generated yet." },
+                        text = photo.humanFriendlyWhy,
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextPrimary
                     )
+                    if (photo.aiDescription.isNotBlank()) {
+                        Text(
+                            text = photo.aiDescription,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
                     if (photo.ocrText.isNotBlank()) {
                         Box(
                             modifier = Modifier
@@ -1387,17 +1370,80 @@ fun PhotoForensicsDetailSheet(
                                 .padding(10.dp)
                         ) {
                             Text(
-                                text = "OCR Text: \"${photo.ocrText}\"",
+                                text = "Detected Text: \"${photo.ocrText}\"",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = SpineCyan
                             )
                         }
                     }
-                    Text(
-                        text = "Verdict: ${photo.junkReason}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
+                }
+            }
+
+            // Expandable RoboLab / Technical Forensics Section (hidden by default)
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = CharcoalSurface,
+                border = BorderStroke(1.dp, CardBorderSlate),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showRoboLabForensics = !showRoboLabForensics }
+                    .testTag("toggle_robolab_forensics")
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Advanced / RoboLab Forensics",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = TextSecondary
+                        )
+                        Icon(
+                            imageVector = if (showRoboLabForensics) {
+                                Icons.Filled.KeyboardArrowUp
+                            } else {
+                                Icons.Filled.ArrowDropDown
+                            },
+                            contentDescription = "Toggle RoboLab details",
+                            tint = TextSecondary
+                        )
+                    }
+
+                    if (showRoboLabForensics) {
+                        HorizontalDivider(color = CardBorderSlate)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            ForensicPillBadge("Sharpness: ${photo.sharpnessScore}/100", SpineEmerald)
+                            ForensicPillBadge("Exposure: ${photo.exposureScore}/100", SpineAmber)
+                            ForensicPillBadge("Framing: ${photo.framingScore}/100", SpineBlue)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            ForensicPillBadge("dHash: ${photo.dHash}", SpineCyan)
+                            ForensicPillBadge("pHash: ${photo.pHash}", SpineViolet)
+                        }
+                        Text(
+                            text = "Laplacian Variance: ${String.format(Locale.US, "%.1f", photo.laplacianVariance)} • Source: ${photo.analyzedByProvider}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted
+                        )
+                        Text(
+                            text = "URI: ${photo.uriString}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = TextMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
@@ -1413,7 +1459,7 @@ fun PhotoForensicsDetailSheet(
                 ) {
                     Icon(Icons.Filled.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text("Re-Analyze AI")
+                    Text("AI Inspect")
                 }
                 Button(
                     onClick = {
@@ -1425,7 +1471,7 @@ fun PhotoForensicsDetailSheet(
                         .weight(1f)
                         .height(48.dp)
                 ) {
-                    Text("Keep Safe", color = Color(0xFF041E15), fontWeight = FontWeight.Bold)
+                    Text("Keep", color = Color(0xFF041E15), fontWeight = FontWeight.Bold)
                 }
                 Button(
                     onClick = {
@@ -1437,10 +1483,93 @@ fun PhotoForensicsDetailSheet(
                         .weight(1f)
                         .height(48.dp)
                 ) {
-                    Text("Vault", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Review Bin", color = Color.White, fontWeight = FontWeight.Bold)
                 }
             }
             Spacer(modifier = Modifier.height(20.dp))
         }
     }
+}
+
+@Composable
+fun TwoStepPermanentDeleteDialog(
+    vaultPhotos: List<PhotoEntity>,
+    totalRecoverableBytes: Long,
+    onConfirmPermanentDelete: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var safetyAcknowledged by remember { mutableStateOf(false) }
+
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = CharcoalSurface,
+        titleContentColor = TextPrimary,
+        textContentColor = TextSecondary,
+        title = {
+            Text(
+                text = "Permanently Delete ${vaultPhotos.size} Item(s)?",
+                style = MaterialTheme.typography.titleLarge,
+                color = TextPrimary,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "This will permanently remove ${vaultPhotos.size} item(s) (${LuminaViewModel.formatBytes(totalRecoverableBytes)}) from your device storage. This action cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = TextSecondary
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = ElevatedSlate,
+                    border = BorderStroke(
+                        1.dp,
+                        if (safetyAcknowledged) SpineCoral else CardBorderSlate
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { safetyAcknowledged = !safetyAcknowledged }
+                        .testTag("two_step_safety_checkbox")
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (safetyAcknowledged) Icons.Filled.Check else Icons.Filled.Security,
+                            contentDescription = null,
+                            tint = if (safetyAcknowledged) SpineCoral else TextSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "I have reviewed these ${vaultPhotos.size} items and want to delete them permanently.",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextPrimary
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirmPermanentDelete,
+                enabled = safetyAcknowledged,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SpineCoral,
+                    contentColor = Color.White
+                ),
+                modifier = Modifier.testTag("confirm_permanent_delete_button")
+            ) {
+                Text("Delete Permanently", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancel", color = TextSecondary)
+            }
+        }
+    )
 }

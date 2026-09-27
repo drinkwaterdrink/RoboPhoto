@@ -2,33 +2,43 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Primary Obsidian & Charcoal Surfaces
-val ObsidianBg = Color(0xFF0D0F14)
-val CharcoalSurface = Color(0xFF161922)
-val ElevatedSlate = Color(0xFF1E222E)
-val CardBorderSlate = Color(0xFF2B3142)
-val SubtleSurface = Color(0xFF252A38)
+// Stealth / Graphite Dark Design System
+val ObsidianBg = Color(0xFF08090B)        // True/near-black primary background
+val CharcoalSurface = Color(0xFF111316)   // Surface 1: Graphite elevated card
+val ElevatedSlate = Color(0xFF181B1F)     // Surface 2: Interactive pill / secondary surface
+val SubtleSurface = Color(0xFF1F242B)     // Surface 3: Subtle container / hover surface
+val CardBorderSlate = Color(0xFF272B31)   // Restrained 1dp border
 
-// Text Hierarchy
-val TextPrimary = Color(0xFFF3F5F8)
-val TextSecondary = Color(0xFFA2ABC0)
-val TextMuted = Color(0xFF6B748B)
+// Typography Hierarchy
+val TextPrimary = Color(0xFFF3F4F6)       // Crisp white/off-white primary text
+val TextSecondary = Color(0xFF9399A3)     // Muted cool gray secondary text
+val TextMuted = Color(0xFF646A75)         // Restrained caption / metadata text
 
-// Purposeful Spine & Accent Colors
-val SpineEmerald = Color(0xFF10B981) // Best-Shot / Keep / Safe
-val SpineEmeraldContainer = Color(0xFF0A2E24)
+// Semantic & Accent Colors
+val ElectricBlue = Color(0xFF168BFF)      // Primary electric blue accent
+val ElectricBlueContainer = Color(0xFF0C2540)
 
-val SpineAmber = Color(0xFFF59E0B) // AI Queue / Review / Warning
-val SpineAmberContainer = Color(0xFF332207)
+val KeepEmerald = Color(0xFF10B981)       // Restrained teal/green for Keep / Best Shot
+val KeepEmeraldContainer = Color(0xFF09261E)
 
-val SpineCoral = Color(0xFFF43F5E) // Quarantine Trash / Blur / Duplicate Extra
-val SpineCoralContainer = Color(0xFF36101B)
+val DestructiveRed = Color(0xFFE5484D)    // Muted red for Review Bin / Delete
+val DestructiveRedContainer = Color(0xFF2D1215)
 
-val SpineCyan = Color(0xFF06B6D4) // Screenshot OCR / Forensics
-val SpineCyanContainer = Color(0xFF082C36)
+// Harmonized Category & Spine Tokens (mapped to Stealth Graphite palette)
+val SpineBlue = ElectricBlue
+val SpineBlueContainer = ElectricBlueContainer
 
-val SpineViolet = Color(0xFF8B5CF6) // BYOK AI / Natural Language Rules
-val SpineVioletContainer = Color(0xFF231642)
+val SpineEmerald = KeepEmerald
+val SpineEmeraldContainer = KeepEmeraldContainer
 
-val SpineBlue = Color(0xFF3B82F6) // Documents / Archive / Favorites
-val SpineBlueContainer = Color(0xFF102447)
+val SpineCoral = DestructiveRed
+val SpineCoralContainer = DestructiveRedContainer
+
+val SpineCyan = Color(0xFF38BDF8)
+val SpineCyanContainer = Color(0xFF0B2738)
+
+val SpineAmber = Color(0xFFF59E0B)
+val SpineAmberContainer = Color(0xFF2B1F0A)
+
+val SpineViolet = Color(0xFF818CF8)
+val SpineVioletContainer = Color(0xFF191C38)

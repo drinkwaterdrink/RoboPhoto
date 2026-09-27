@@ -175,5 +175,72 @@ class ExampleRobolectricTest {
         assertEquals(2, visionOnly.size)
         assertTrue(visionOnly.any { it.id == "gpt-4o-mini" })
         assertTrue(visionOnly.any { it.id == "qwen/qwen2.5-vl-72b-instruct" })
+
+        // Verify strict clustering safety & media identity invariants:
+        // 1. A video and a photo with the same perceptual hash must NEVER be clustered together
+        val nowMs = 1_750_000_000_000L
+        val photoItem = videoEntity.copy(
+            id = 101L,
+            uriString = "content://media/external/images/media/101",
+            title = "IMG_001.jpg",
+            mediaType = "IMAGE",
+            mimeType = "image/jpeg",
+            durationMs = 0L,
+            dateTakenEpochMs = nowMs,
+            dHash = "55aa55aa55aa55aa",
+            pHash = "33cc33cc33cc33cc",
+            sharpnessScore = 88,
+            overallQualityScore = 88
+        )
+        val videoWithSameHash = videoEntity.copy(
+            id = 102L,
+            uriString = "content://media/external/video/media/102",
+            title = "VID_001.mp4",
+            mediaType = "VIDEO",
+            mimeType = "video/mp4",
+            durationMs = 15_000L,
+            dateTakenEpochMs = nowMs + 1000L,
+            dHash = "55aa55aa55aa55aa",
+            pHash = "33cc33cc33cc33cc",
+            sharpnessScore = 70,
+            overallQualityScore = 72
+        )
+        val mixedClusterResult = scanner.clusterAndNominateBestShots(listOf(photoItem, videoWithSameHash))
+        assertTrue(mixedClusterResult.all { it.duplicateClusterId == null })
+
+        // 2. Two genuine burst photos taken 2 seconds apart ARE clustered and sharpest is Best Shot
+        val burstShotSharp = photoItem.copy(
+            id = 201L,
+            uriString = "content://media/external/images/media/201",
+            sharpnessScore = 92,
+            overallQualityScore = 91
+        )
+        val burstShotSoft = photoItem.copy(
+            id = 202L,
+            uriString = "content://media/external/images/media/202",
+            dateTakenEpochMs = nowMs + 2000L,
+            sharpnessScore = 54,
+            overallQualityScore = 58
+        )
+        val burstClustered = scanner.clusterAndNominateBestShots(listOf(burstShotSharp, burstShotSoft))
+        val bestWinner = burstClustered.first { it.id == 201L }
+        val extraVariant = burstClustered.first { it.id == 202L }
+        assertNotNull(bestWinner.duplicateClusterId)
+        assertEquals(bestWinner.duplicateClusterId, extraVariant.duplicateClusterId)
+        assertTrue(bestWinner.isBestShotInCluster)
+        assertTrue(!extraVariant.isBestShotInCluster)
+
+        // 3. Marking an item as 'Not Duplicate' (ALL_EXCLUDED) prevents clustering
+        val excludedBurst = scanner.clusterAndNominateBestShots(
+            listOf(burstShotSharp, burstShotSoft.copy(excludedClusterKeys = "ALL_EXCLUDED"))
+        )
+        assertTrue(excludedBurst.all { it.duplicateClusterId == null })
+
+        // 4. Verify stableIdentityKey uniqueness even when filenames match
+        val sameTitleDifferentUri = burstShotSharp.copy(
+            id = 203L,
+            uriString = "content://media/external/images/media/203"
+        )
+        assertTrue(burstShotSharp.stableIdentityKey != sameTitleDifferentUri.stableIdentityKey)
     }
 }

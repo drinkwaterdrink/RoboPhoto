@@ -11,7 +11,7 @@ import androidx.room.RoomDatabase
         CleanupRuleEntity::class,
         AiAuditLogEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class LuminaDatabase : RoomDatabase() {
@@ -23,14 +23,15 @@ abstract class LuminaDatabase : RoomDatabase() {
 
         fun getInstance(context: Context): LuminaDatabase {
             return INSTANCE ?: synchronized(this) {
-                INSTANCE ?: Room.databaseBuilder(
+                val instance = Room.databaseBuilder(
                     context.applicationContext,
                     LuminaDatabase::class.java,
                     "lumina_clean_forensics.db"
                 )
-                    .fallbackToDestructiveMigration(true)
+                    .fallbackToDestructiveMigration()
                     .build()
-                    .also { INSTANCE = it }
+                INSTANCE = instance
+                instance
             }
         }
     }

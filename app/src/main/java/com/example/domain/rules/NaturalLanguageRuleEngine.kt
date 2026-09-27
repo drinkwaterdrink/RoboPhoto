@@ -11,7 +11,13 @@ data class RuleEvaluationPreview(
     val matchedForCleanup: List<PhotoEntity>,
     val protectedByExclusions: List<Pair<PhotoEntity, String>>,
     val totalRecoverableBytes: Long
-)
+) {
+    val matchingPhotos: List<PhotoEntity>
+        get() = matchedForCleanup
+
+    val recoverableBytes: Long
+        get() = totalRecoverableBytes
+}
 
 data class GoalCleanupTier(
     val tierNumber: Int,
