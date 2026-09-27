@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">RoboPhoto</string>
+    <string name="tagline_subtitle">Local-First AI Photo Forensics &amp; Triage</string>
+    <string name="nav_queues">Queues</string>
+    <string name="nav_swipe">Swipe Deck</string>
+    <string name="nav_duplicates">Clusters</string>
+    <string name="nav_rules">AI Rules</string>
+    <string name="nav_vault">Vault</string>
+    <string name="action_import_photos">Import Photos</string>
+    <string name="action_rescan">Run Scanner</string>
+    <string name="action_five_min_session">5-Min Sprint</string>
+    <string name="action_goal_planner">Goal Planner</string>
+    <string name="action_ai_hub">BYOK AI Hub</string>
+    <string name="security_prototype_warning">Security Notice: API keys configured via BuildConfig are packaged for prototype testing. Never share this APK publicly.</string>
+</resources>

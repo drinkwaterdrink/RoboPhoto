@@ -1,0 +1,6 @@
+{
+  "name": "RoboPhoto",
+  "description": "Intelligent local-first AI photo library cleaner with perceptual deduplication, best-shot scoring, swipe triage, natural-language rules, and custom BYOK OpenAI-compatible connection profiles.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
