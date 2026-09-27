@@ -22,6 +22,10 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
+  ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+  }
+
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"

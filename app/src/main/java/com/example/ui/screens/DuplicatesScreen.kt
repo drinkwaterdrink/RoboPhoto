@@ -1,7 +1,19 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,59 +26,77 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.BurstMode
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Compare
-import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.FolderCopy
-import androidx.compose.material.icons.filled.LinkOff
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Pets
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Screenshot
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Spa
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.data.local.MediaClusterType
 import com.example.data.local.PhotoCategory
 import com.example.data.local.PhotoEntity
 import com.example.data.local.TriageStatus
-import com.example.ui.components.ForensicPillBadge
+import com.example.ui.components.BestShotAnimatedBadge
+import com.example.ui.components.FlickerCompareDialog
 import com.example.ui.components.PhotoThumbnailView
+import com.example.ui.components.SectionEmptyStateCard
 import com.example.ui.theme.CardBorderSlate
 import com.example.ui.theme.CharcoalSurface
 import com.example.ui.theme.DestructiveRed
@@ -74,376 +104,725 @@ import com.example.ui.theme.ElectricBlue
 import com.example.ui.theme.ElevatedSlate
 import com.example.ui.theme.KeepEmerald
 import com.example.ui.theme.ObsidianBg
+import com.example.ui.theme.RoboCard
+import com.example.ui.theme.RoboHaptics
+import com.example.ui.theme.RoboMediaCard
+import com.example.ui.theme.RoboMotion
+import com.example.ui.theme.RoboPill
+import com.example.ui.theme.RoboPrimaryButton
+import com.example.ui.theme.RoboProgressNumber
+import com.example.ui.theme.RoboRadius
+import com.example.ui.theme.RoboSecondaryButton
+import com.example.ui.theme.RoboSectionHeader
 import com.example.ui.theme.SpineAmber
+import com.example.ui.theme.SpineCyan
+import com.example.ui.theme.SpineViolet
 import com.example.ui.theme.TextMuted
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.ui.theme.roboPressScale
 import com.example.ui.viewmodel.DuplicateClusterGroup
 import com.example.ui.viewmodel.LuminaUiState
 import com.example.ui.viewmodel.LuminaViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
+private enum class CollectionsPrimaryTab(val label: String) {
+    CLEANUP("Cleanup"),
+    SMART_COLLECTIONS("Smart Collections")
+}
+
+private enum class CleanupCollectionFilter(val label: String) {
+    ALL("All Cleanup"),
+    EXACT_DUPLICATES("Exact Duplicates"),
+    SIMILAR_PHOTOS("Similar Photos"),
+    BURST_SEQUENCES("Burst Sequences"),
+    SIMILAR_VIDEOS("Similar Videos"),
+    SCREENSHOTS("Screenshots")
+}
+
+private enum class SmartSubjectFilter(val label: String, val icon: ImageVector, val accent: Color) {
+    ALL("All Smart", Icons.Filled.Collections, ElectricBlue),
+    PEOPLE("People", Icons.Filled.Person, ElectricBlue),
+    PETS("Pets", Icons.Filled.Pets, SpineAmber),
+    PLANTS("Plants", Icons.Filled.Spa, KeepEmerald),
+    RECEIPTS("Receipts", Icons.Filled.Receipt, SpineCyan),
+    DOCUMENTS("Documents", Icons.Filled.Description, SpineViolet),
+    DOWNLOADS("Downloads", Icons.Filled.Download, ElectricBlue)
+}
+
+/**
+ * Pass 4 Sections H, I, J, P:
+ * - Information Architecture split into two clean tabs:
+ *   1. Cleanup (Exact Duplicates, Similar Photos, Burst Sequences, Similar Videos, Screenshots)
+ *   2. Smart Collections (People, Pets, Plants, Receipts, Documents, Downloads)
+ * - Cluster Collapse Effect (Section H):
+ *   1. Selected Best Shot remains
+ *   2. Redundant thumbnails gently move/stack toward it
+ *   3. Resolved card compresses
+ *   4. Reclaimed storage count animates upward
+ *   5. Card transitions into completed state then disappears (~520 ms)
+ * - Best Shot Animation (Section I) & Flicker Compare Dialog (Section J).
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DuplicatesScreen(
     uiState: LuminaUiState,
-    onVaultRedundantInCluster: (List<PhotoEntity>, String) -> Unit,
-    onVaultAllRedundant: (List<PhotoEntity>) -> Unit,
-    onInspectPhoto: (PhotoEntity) -> Unit,
-    onRenameCluster: (String, String) -> Unit = { _, _ -> },
-    onMarkNotDuplicate: (PhotoEntity) -> Unit = {},
-    onSelectBestShot: (String, Long) -> Unit = { _, _ -> },
-    modifier: Modifier = Modifier
+    onTrashRedundantForCluster: (DuplicateClusterGroup) -> Unit,
+    onTrashAllRedundantDuplicates: (List<PhotoEntity>) -> Unit,
+    onInspectPhotoDetail: (PhotoEntity) -> Unit,
+    onRenameCluster: (String, String) -> Unit,
+    onMarkNotDuplicate: (PhotoEntity) -> Unit,
+    onSelectBestShot: (String, Long) -> Unit,
+    onSelectCategoryFilter: (PhotoCategory?) -> Unit,
+    onOpenQueueInSwipeDeck: (String?) -> Unit
 ) {
-    val clusters = uiState.duplicateClusters
-    val allRedundant = remember(clusters) { clusters.flatMap { it.redundantVariants } }
-    val totalRecoverable = remember(allRedundant) { allRedundant.sumOf { it.fileSizeBytes } }
+    val haptic = LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
 
-    var showCollectionsView by remember { mutableStateOf(false) }
-    var selectedCollectionCategory by remember { mutableStateOf<PhotoCategory?>(null) }
-    var renamingCluster by remember { mutableStateOf<DuplicateClusterGroup?>(null) }
-    var renameInputText by remember { mutableStateOf("") }
+    var activeTab by remember { mutableStateOf(CollectionsPrimaryTab.CLEANUP) }
+    var selectedCleanupFilter by remember { mutableStateOf(CleanupCollectionFilter.ALL) }
+    var selectedSmartFilter by remember { mutableStateOf(SmartSubjectFilter.ALL) }
+    var searchQuery by remember { mutableStateOf("") }
 
-    val collectionItems = remember(uiState.activePhotos, selectedCollectionCategory) {
-        if (selectedCollectionCategory == null) {
-            uiState.activePhotos
-        } else {
-            uiState.activePhotos.filter { it.categoryEnum == selectedCollectionCategory }
-        }
+    // Flicker compare dialog state (Pass 4 Section J)
+    var activeFlickerClusterId by remember { mutableStateOf<String?>(null) }
+    val activeFlickerCluster = remember(activeFlickerClusterId, uiState.duplicateClusters) {
+        activeFlickerClusterId?.let { cid -> uiState.duplicateClusters.find { it.clusterId == cid } }
     }
 
-    if (renamingCluster != null) {
-        val targetCluster = renamingCluster!!
-        AlertDialog(
-            onDismissRequest = { renamingCluster = null },
-            containerColor = CharcoalSurface,
-            titleContentColor = TextPrimary,
-            textContentColor = TextSecondary,
-            title = { Text("Rename Group") },
-            text = {
-                OutlinedTextField(
-                    value = renameInputText,
-                    onValueChange = { renameInputText = it },
-                    label = { Text("Group Title") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onRenameCluster(targetCluster.clusterId, renameInputText)
-                        renamingCluster = null
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
-                ) {
-                    Text("Save", color = Color.White)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { renamingCluster = null }) {
-                    Text("Cancel", color = TextSecondary)
-                }
-            }
-        )
+    // Cluster Collapse Animation state (Pass 4 Section H):
+    // Maps clusterId -> collapsing stage (true while animating collapse before committing batch bin)
+    val collapsingClusters = remember { mutableStateMapOf<String, Boolean>() }
+    var bonusAnimatingSavedBytes by remember { mutableStateOf(0L) }
+
+    val totalDuplicateSavingsBytes = remember(uiState.duplicateClusters, bonusAnimatingSavedBytes) {
+        uiState.duplicateClusters.sumOf { it.recoverableBytes }
     }
 
-    LazyColumn(
-        modifier = modifier
-            .fillMaxSize()
-            .background(ObsidianBg),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+    val filteredClusters = remember(
+        uiState.duplicateClusters,
+        selectedCleanupFilter,
+        searchQuery
     ) {
-        // Header + Mode Switcher (Duplicates & Similar vs Smart Collections)
-        item(key = "collections_top_header") {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = "Collections",
-                            style = MaterialTheme.typography.headlineMedium,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = "${clusters.size} duplicate groups • ${uiState.activePhotos.size} total items",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
-                    }
-                }
+        uiState.duplicateClusters.filter { cluster ->
+            val matchesType = when (selectedCleanupFilter) {
+                CleanupCollectionFilter.ALL -> true
+                CleanupCollectionFilter.EXACT_DUPLICATES -> cluster.type == MediaClusterType.EXACT_DUPLICATE
+                CleanupCollectionFilter.SIMILAR_PHOTOS -> cluster.type == MediaClusterType.NEAR_DUPLICATE
+                CleanupCollectionFilter.BURST_SEQUENCES -> cluster.type == MediaClusterType.BURST_SEQUENCE
+                CleanupCollectionFilter.SIMILAR_VIDEOS -> cluster.type == MediaClusterType.SIMILAR_VIDEO
+                CleanupCollectionFilter.SCREENSHOTS -> cluster.type == MediaClusterType.SCREENSHOT_VARIANT ||
+                    cluster.allMembers.any { it.categoryEnum == PhotoCategory.SCREENSHOT }
+            }
+            val q = searchQuery.trim().lowercase()
+            val matchesSearch = q.isEmpty() ||
+                cluster.title.lowercase().contains(q) ||
+                cluster.reason.lowercase().contains(q) ||
+                cluster.allMembers.any { it.title.lowercase().contains(q) || it.semanticLabels.lowercase().contains(q) }
+            matchesType && matchesSearch
+        }
+    }
 
-                // Segmented Sub-Tab Bar
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(CharcoalSurface)
-                        .padding(4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val dupSelected = !showCollectionsView
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (dupSelected) ElectricBlue else Color.Transparent,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { showCollectionsView = false }
-                            .testTag("tab_duplicate_groups")
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(vertical = 10.dp)
-                        ) {
-                            Text(
-                                text = "Duplicates & Similar (${clusters.size})",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (dupSelected) Color.White else TextSecondary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
+    val screenshotCandidates = remember(uiState.activePhotos, searchQuery) {
+        uiState.activePhotos.filter {
+            it.categoryEnum == PhotoCategory.SCREENSHOT &&
+                (searchQuery.isBlank() || it.title.contains(searchQuery, ignoreCase = true) || it.ocrSnippet.contains(searchQuery, ignoreCase = true))
+        }
+    }
 
-                    val colSelected = showCollectionsView
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (colSelected) ElectricBlue else Color.Transparent,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clickable { showCollectionsView = true }
-                            .testTag("tab_media_collections")
-                    ) {
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier.padding(vertical = 10.dp)
-                        ) {
-                            Text(
-                                text = "Categories (${PhotoCategory.entries.size})",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = if (colSelected) Color.White else TextSecondary,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
+    val smartCollectionGroups = remember(uiState.activePhotos) {
+        buildSmartSubjectMap(uiState.activePhotos)
+    }
+
+    val displayedSmartPhotos = remember(smartCollectionGroups, selectedSmartFilter, searchQuery, uiState.activePhotos) {
+        val base = when (selectedSmartFilter) {
+            SmartSubjectFilter.ALL -> uiState.activePhotos
+            else -> smartCollectionGroups[selectedSmartFilter].orEmpty()
+        }
+        val q = searchQuery.trim().lowercase()
+        if (q.isEmpty()) {
+            base
+        } else {
+            base.filter {
+                it.title.lowercase().contains(q) ||
+                    it.semanticLabels.lowercase().contains(q) ||
+                    it.ocrSnippet.lowercase().contains(q) ||
+                    it.categoryEnum.displayName.lowercase().contains(q)
             }
         }
+    }
 
-        if (!showCollectionsView) {
-            // Summary Card for Duplicate Groups
-            item(key = "duplicate_summary_banner") {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(18.dp),
-                    colors = CardDefaults.cardColors(containerColor = CharcoalSurface),
-                    border = BorderStroke(1.dp, CardBorderSlate)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "${LuminaViewModel.formatBytes(totalRecoverable)} in duplicate extras",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    color = TextPrimary,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Best shots are automatically selected and kept safe. Tap any item to preview or mark 'Not Duplicate'.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = TextSecondary
-                                )
-                            }
-                        }
+    fun triggerClusterCollapseAndResolve(cluster: DuplicateClusterGroup) {
+        if (collapsingClusters[cluster.clusterId] == true) return
+        collapsingClusters[cluster.clusterId] = true
+        RoboHaptics.completion(haptic)
+        bonusAnimatingSavedBytes += cluster.recoverableBytes
+        coroutineScope.launch {
+            // Allow 480ms for redundant thumbnails to stack into Best Shot & card to compress
+            delay(RoboMotion.CLUSTER_COLLAPSE_MS.toLong())
+            onTrashRedundantForCluster(cluster)
+            delay(120L)
+            collapsingClusters.remove(cluster.clusterId)
+        }
+    }
 
-                        if (allRedundant.isNotEmpty()) {
-                            Button(
-                                onClick = { onVaultAllRedundant(allRedundant) },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = ElectricBlue,
-                                    contentColor = Color.White
-                                ),
-                                shape = RoundedCornerShape(12.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .testTag("vault_all_duplicates_button")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.DeleteOutline,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = "Keep All Best Shots • Move ${allRedundant.size} Extras to Bin",
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (clusters.isEmpty()) {
-                item(key = "no_duplicates_card") {
-                    Card(
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(ObsidianBg)
+            .testTag("duplicates_screen")
+    ) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .widthIn(max = 680.dp)
+                .align(Alignment.TopCenter),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 1. Header & Segmented Primary Tabs: [ Cleanup ] | [ Smart Collections ] (Pass 4 Section P)
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(containerColor = CharcoalSurface),
-                        border = BorderStroke(1.dp, CardBorderSlate)
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(
-                            modifier = Modifier.padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.CheckCircle,
-                                contentDescription = null,
-                                tint = KeepEmerald,
-                                modifier = Modifier.size(40.dp)
-                            )
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
-                                text = "No Duplicate Groups Found",
-                                style = MaterialTheme.typography.titleMedium,
+                                text = "Collections",
+                                style = MaterialTheme.typography.headlineMedium,
                                 color = TextPrimary,
                                 fontWeight = FontWeight.Bold
                             )
-                            Text(
-                                text = "Your library has no remaining near-duplicate bursts or repeated video clips.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = TextSecondary
+                            RoboProgressNumber(
+                                targetValue = totalDuplicateSavingsBytes,
+                                formatter = { bytes ->
+                                    "${uiState.duplicateClusters.size} cleanup groups • ${LuminaViewModel.formatBytes(bytes)} recoverable"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = KeepEmerald,
+                                fontWeight = FontWeight.SemiBold
                             )
                         }
+
+                        if (activeTab == CollectionsPrimaryTab.CLEANUP && uiState.duplicateClusters.isNotEmpty()) {
+                            val allRedundant = remember(uiState.duplicateClusters) {
+                                uiState.duplicateClusters.flatMap { it.redundantVariants }
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    RoboHaptics.completion(haptic)
+                                    onTrashAllRedundantDuplicates(allRedundant)
+                                },
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, ElectricBlue.copy(alpha = 0.55f)),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                                modifier = Modifier
+                                    .roboPressScale()
+                                    .testTag("clean_all_duplicates_button")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.DeleteSweep,
+                                    contentDescription = null,
+                                    tint = ElectricBlue,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = "Clean All (${allRedundant.size})",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = ElectricBlue,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
                     }
-                }
-            } else {
-                items(
-                    items = clusters,
-                    key = { it.clusterId }
-                ) { cluster ->
-                    DuplicateClusterCard(
-                        cluster = cluster,
-                        onVaultRedundant = { selectedToBin ->
-                            onVaultRedundantInCluster(selectedToBin, cluster.title)
+
+                    // Primary Two-Tab Switcher: Cleanup | Smart Collections
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = CharcoalSurface,
+                        border = BorderStroke(1.dp, CardBorderSlate),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CollectionsPrimaryTab.entries.forEach { tab ->
+                                val selected = activeTab == tab
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = if (selected) ElectricBlue else Color.Transparent,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clickable {
+                                            RoboHaptics.swipeThresholdTick(haptic)
+                                            activeTab = tab
+                                        }
+                                        .testTag("collections_tab_${tab.name}")
+                                ) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier.padding(vertical = 10.dp)
+                                    ) {
+                                        Text(
+                                            text = tab.label,
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = if (selected) TextPrimary else TextSecondary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Search bar
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = {
+                            Text(
+                                text = if (activeTab == CollectionsPrimaryTab.CLEANUP) {
+                                    "Filter duplicate groups, bursts, or screenshots..."
+                                } else {
+                                    "Search People, Pets, Plants, Receipts, Documents..."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextMuted
+                            )
                         },
-                        onRenameClick = {
-                            renameInputText = cluster.title
-                            renamingCluster = cluster
+                        leadingIcon = {
+                            Icon(Icons.Filled.Search, contentDescription = null, tint = TextSecondary)
                         },
-                        onMarkNotDuplicate = onMarkNotDuplicate,
-                        onSelectBestShot = { photoId ->
-                            onSelectBestShot(cluster.clusterId, photoId)
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Clear", tint = TextSecondary)
+                                }
+                            }
                         },
-                        onInspectPhoto = onInspectPhoto
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = CharcoalSurface,
+                            unfocusedContainerColor = CharcoalSurface,
+                            focusedBorderColor = ElectricBlue,
+                            unfocusedBorderColor = CardBorderSlate
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("collections_search_input")
                     )
                 }
             }
-        } else {
-            // Smart Collections View
-            item(key = "category_grid_selector") {
-                val categoryGroups = remember(uiState.activePhotos) {
-                    PhotoCategory.entries.mapNotNull { cat ->
-                        val items = uiState.activePhotos.filter { it.categoryEnum == cat }
-                        if (items.isNotEmpty()) cat to items else null
+
+            // 2A. CLEANUP TAB: Exact Duplicates, Similar Photos, Burst Sequences, Similar Videos, Screenshots
+            if (activeTab == CollectionsPrimaryTab.CLEANUP) {
+                item {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(vertical = 2.dp)
+                    ) {
+                        items(CleanupCollectionFilter.entries.toList(), key = { it.name }) { filter ->
+                            val selected = selectedCleanupFilter == filter
+                            FilterChip(
+                                selected = selected,
+                                onClick = {
+                                    RoboHaptics.swipeThresholdTick(haptic)
+                                    selectedCleanupFilter = filter
+                                },
+                                label = { Text(filter.label) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = ElectricBlue.copy(alpha = 0.22f),
+                                    selectedLabelColor = ElectricBlue
+                                ),
+                                modifier = Modifier.testTag("cleanup_collection_filter_${filter.name}")
+                            )
+                        }
                     }
                 }
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = selectedCollectionCategory == null,
-                            onClick = { selectedCollectionCategory = null },
-                            label = { Text("All (${uiState.activePhotos.size})") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = ElectricBlue.copy(alpha = 0.18f),
-                                selectedLabelColor = ElectricBlue
-                            )
+
+                if (selectedCleanupFilter == CleanupCollectionFilter.SCREENSHOTS && filteredClusters.isEmpty()) {
+                    // Show screenshot collection cards directly if no multi-screenshot clusters
+                    item {
+                        ScreenshotCleanupCollectionCard(
+                            screenshots = screenshotCandidates,
+                            onReviewScreenshots = { onOpenQueueInSwipeDeck("queue_old_screenshots") },
+                            onInspectPhotoDetail = onInspectPhotoDetail
                         )
-                        categoryGroups.forEach { (cat, list) ->
-                            val isSel = selectedCollectionCategory == cat
-                            FilterChip(
-                                selected = isSel,
-                                onClick = { selectedCollectionCategory = if (isSel) null else cat },
-                                label = { Text("${cat.label} (${list.size})") },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = ElectricBlue.copy(alpha = 0.18f),
-                                    selectedLabelColor = ElectricBlue
+                    }
+                } else if (filteredClusters.isEmpty()) {
+                    item {
+                        SectionEmptyStateCard(
+                            title = "No Groups in ${selectedCleanupFilter.label}",
+                            message = "Your library has no remaining redundant items in this cleanup category.",
+                            icon = Icons.Filled.CheckCircle
+                        )
+                    }
+                } else {
+                    items(
+                        items = filteredClusters,
+                        key = { it.clusterId }
+                    ) { cluster ->
+                        val isCollapsing = collapsingClusters[cluster.clusterId] == true
+                        ClusterInteractiveComparisonCard(
+                            cluster = cluster,
+                            isCollapsing = isCollapsing,
+                            onResolveCluster = { triggerClusterCollapseAndResolve(cluster) },
+                            onOpenFlickerCompare = { activeFlickerClusterId = cluster.clusterId },
+                            onInspectPhotoDetail = onInspectPhotoDetail,
+                            onSelectBestShot = { photoId ->
+                                RoboHaptics.bestShotSelection(haptic)
+                                onSelectBestShot(cluster.clusterId, photoId)
+                            },
+                            onRenameCluster = { newTitle ->
+                                onRenameCluster(cluster.clusterId, newTitle)
+                            },
+                            onMarkNotDuplicate = onMarkNotDuplicate
+                        )
+                    }
+                }
+            } else {
+                // 2B. SMART COLLECTIONS TAB: People, Pets, Plants, Receipts, Documents, Downloads (Concept Horizontal Cover-Photo Rows + Grid)
+                item {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(vertical = 2.dp)
+                    ) {
+                        items(SmartSubjectFilter.entries.toList(), key = { it.name }) { filter ->
+                            val selected = selectedSmartFilter == filter
+                            Surface(
+                                shape = RoundedCornerShape(999.dp),
+                                color = if (selected) ElectricBlue else ElevatedSlate,
+                                border = BorderStroke(
+                                    width = 1.dp,
+                                    color = if (selected) ElectricBlue else CardBorderSlate
+                                ),
+                                modifier = Modifier
+                                    .roboPressScale()
+                                    .clickable {
+                                        RoboHaptics.swipeThresholdTick(haptic)
+                                        selectedSmartFilter = filter
+                                    }
+                                    .testTag("smart_collection_pill_${filter.name}")
+                            ) {
+                                Text(
+                                    text = filter.label,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = if (selected) TextPrimary else TextSecondary,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                                 )
-                            )
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        val subjectFilters = remember {
+                            SmartSubjectFilter.entries.filter { it != SmartSubjectFilter.ALL }
+                        }
+                        subjectFilters.forEach { subject ->
+                            val subjectPhotos = smartCollectionGroups[subject].orEmpty()
+                            val coverPhoto = subjectPhotos.firstOrNull() ?: uiState.activePhotos.firstOrNull()
+                            val folderCount = remember(subjectPhotos) {
+                                subjectPhotos.map { it.folderName.ifBlank { "Camera" } }.distinct().size.coerceAtLeast(1)
+                            }
+                            val isSelected = selectedSmartFilter == subject
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = CharcoalSurface,
+                                border = BorderStroke(
+                                    width = if (isSelected) 1.5.dp else 1.dp,
+                                    color = if (isSelected) ElectricBlue else CardBorderSlate
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .roboPressScale()
+                                    .clickable {
+                                        RoboHaptics.swipeThresholdTick(haptic)
+                                        selectedSmartFilter = if (isSelected) SmartSubjectFilter.ALL else subject
+                                    }
+                                    .testTag("smart_collection_tile_${subject.name}")
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                ) {
+                                    // Cover photo thumbnail on left (like right phone in UI concept image)
+                                    if (coverPhoto != null) {
+                                        PhotoThumbnailView(
+                                            photo = coverPhoto,
+                                            showBadges = false,
+                                            cornerRadius = 12.dp,
+                                            modifier = Modifier.size(64.dp)
+                                        )
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = ElevatedSlate,
+                                            border = BorderStroke(1.dp, CardBorderSlate),
+                                            modifier = Modifier.size(64.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Icon(
+                                                    imageVector = subject.icon,
+                                                    contentDescription = null,
+                                                    tint = subject.accent,
+                                                    modifier = Modifier.size(26.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Title + photo count + sub-collection count in center
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Text(
+                                            text = subject.label,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "${subjectPhotos.size} photos",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextSecondary
+                                        )
+                                        Text(
+                                            text = "$folderCount collections • ${LuminaViewModel.formatBytes(subjectPhotos.sumOf { it.fileSizeBytes })}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = TextMuted
+                                        )
+                                    }
+
+                                    // Category icon + Chevron on right
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = subject.icon,
+                                            contentDescription = null,
+                                            tint = subject.accent,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Icon(
+                                            imageVector = Icons.Filled.ChevronRight,
+                                            contentDescription = "Open ${subject.label}",
+                                            tint = TextSecondary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    RoboSectionHeader(
+                        title = selectedSmartFilter.label,
+                        subtitle = "${displayedSmartPhotos.size} items organized automatically"
+                    )
+                }
+
+                if (displayedSmartPhotos.isEmpty()) {
+                    item {
+                        SectionEmptyStateCard(
+                            title = "No Items in ${selectedSmartFilter.label}",
+                            message = "Try selecting another Smart Collection or scanning more photos.",
+                            icon = Icons.Filled.FolderOpen
+                        )
+                    }
+                } else {
+                    item {
+                        val rows = remember(displayedSmartPhotos) { displayedSmartPhotos.chunked(3) }
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            rows.forEach { rowPhotos ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    rowPhotos.forEach { photo ->
+                                        RoboMediaCard(
+                                            onClick = { onInspectPhotoDetail(photo) },
+                                            isBestShot = photo.isBestShotInCluster,
+                                            isSelected = photo.triageStatusEnum == TriageStatus.KEEP,
+                                            cornerRadius = 12.dp,
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .height(118.dp)
+                                                .testTag("smart_collection_photo_${photo.id}")
+                                        ) {
+                                            PhotoThumbnailView(
+                                                photo = photo,
+                                                showBadges = true,
+                                                cornerRadius = 12.dp,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        }
+                                    }
+                                    repeat(3 - rowPhotos.size) {
+                                        Spacer(Modifier.weight(1f))
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            items(
-                items = collectionItems,
-                key = { it.stableIdentityKey }
-            ) { photo ->
-                CollectionItemRow(
-                    photo = photo,
-                    onInspect = { onInspectPhoto(photo) },
-                    onMoveToBin = {
-                        onVaultRedundantInCluster(listOf(photo), photo.categoryEnum.label)
-                    }
-                )
+            item {
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
+
+    // Photography-grade Flicker Compare Dialog (Pass 4 Section J)
+    if (activeFlickerCluster != null) {
+        FlickerCompareDialog(
+            cluster = activeFlickerCluster,
+            onSelectBestShot = { cid, pid ->
+                onSelectBestShot(cid, pid)
+            },
+            onMoveExtraToBin = { extraPhoto ->
+                onTrashAllRedundantDuplicates(listOf(extraPhoto))
+            },
+            onDismiss = { activeFlickerClusterId = null }
+        )
+    }
 }
 
+/**
+ * Pass 4 Sections H & I:
+ * Cluster Card with:
+ * - Best Shot animated badge & shimmer border when nominated or manually chosen
+ * - Cluster Collapse Effect when resolved:
+ *   1. Selected Best Shot remains prominent
+ *   2. Redundant thumbnails gently move/stack toward it (animated horizontal offset & scale)
+ *   3. Resolved card compresses into a sleek "Resolved ✓ +X MB" bar before disappearing.
+ */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun DuplicateClusterCard(
+private fun ClusterInteractiveComparisonCard(
     cluster: DuplicateClusterGroup,
-    onVaultRedundant: (List<PhotoEntity>) -> Unit,
-    onRenameClick: () -> Unit,
-    onMarkNotDuplicate: (PhotoEntity) -> Unit,
+    isCollapsing: Boolean,
+    onResolveCluster: () -> Unit,
+    onOpenFlickerCompare: () -> Unit,
+    onInspectPhotoDetail: (PhotoEntity) -> Unit,
     onSelectBestShot: (Long) -> Unit,
-    onInspectPhoto: (PhotoEntity) -> Unit
+    onRenameCluster: (String) -> Unit,
+    onMarkNotDuplicate: (PhotoEntity) -> Unit
 ) {
-    // Track which redundant items are selected for moving to Review Bin (default: all non-best shots)
-    var unselectedIds by remember(cluster.clusterId, cluster.allMembers.map { it.id }) {
-        mutableStateOf(emptySet<Long>())
-    }
+    var isEditingTitle by remember { mutableStateOf(false) }
+    var draftTitle by remember(cluster.title) { mutableStateOf(cluster.title) }
 
-    val selectedExtras = cluster.redundantVariants.filterNot { it.id in unselectedIds }
-    val selectedRecoverableBytes = selectedExtras.sumOf { it.fileSizeBytes }
+    val cardScale by animateFloatAsState(
+        targetValue = if (isCollapsing) 0.96f else 1f,
+        animationSpec = tween(
+            durationMillis = RoboMotion.CLUSTER_COLLAPSE_MS,
+            easing = FastOutSlowInEasing
+        ),
+        label = "clusterCollapseScale"
+    )
 
-    Card(
+    val redundantStackOffsetDp by animateDpAsState(
+        targetValue = if (isCollapsing) (-72).dp else 0.dp,
+        animationSpec = tween(
+            durationMillis = (RoboMotion.CLUSTER_COLLAPSE_MS * 0.65f).toInt(),
+            easing = FastOutSlowInEasing
+        ),
+        label = "redundantStackOffset"
+    )
+
+    val redundantAlpha by animateFloatAsState(
+        targetValue = if (isCollapsing) 0f else 1f,
+        animationSpec = tween(
+            durationMillis = (RoboMotion.CLUSTER_COLLAPSE_MS * 0.70f).toInt(),
+            easing = FastOutSlowInEasing
+        ),
+        label = "redundantAlpha"
+    )
+
+    Surface(
+        shape = RoundedCornerShape(RoboRadius.Card),
+        color = CharcoalSurface,
+        border = BorderStroke(
+            width = if (isCollapsing) 1.5.dp else 1.dp,
+            color = if (isCollapsing) KeepEmerald else CardBorderSlate
+        ),
         modifier = Modifier
             .fillMaxWidth()
-            .testTag("cluster_card_${cluster.clusterId}"),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = CharcoalSurface),
-        border = BorderStroke(1.dp, CardBorderSlate)
+            .graphicsLayer {
+                scaleX = cardScale
+                scaleY = cardScale
+            }
+            .testTag("cluster_card_${cluster.clusterId}")
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Cluster Header with Rename button & recoverable size badge
+            // Header: Title + Cluster Type Pill + Recoverable Bytes
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.Top
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.weight(1f)
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        RoboPill(
+                            text = cluster.type.displayName,
+                            accentColor = ElectricBlue
+                        )
+                        RoboPill(
+                            text = "${cluster.allMembers.size} items",
+                            accentColor = TextSecondary
+                        )
+                    }
+
+                    if (isEditingTitle) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = draftTitle,
+                                onValueChange = { draftTitle = it },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = {
+                                    if (draftTitle.isNotBlank()) {
+                                        onRenameCluster(draftTitle)
+                                    }
+                                    isEditingTitle = false
+                                }
+                            ) {
+                                Icon(Icons.Filled.Check, contentDescription = "Save title", tint = KeepEmerald)
+                            }
+                        }
+                    } else {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -456,225 +835,228 @@ private fun DuplicateClusterCard(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            IconButton(
-                                onClick = onRenameClick,
+                            Icon(
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = "Rename cluster",
+                                tint = TextMuted,
                                 modifier = Modifier
-                                    .size(26.dp)
-                                    .testTag("rename_cluster_${cluster.clusterId}")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Edit,
-                                    contentDescription = "Rename group",
-                                    tint = TextSecondary,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                            }
+                                    .size(15.dp)
+                                    .clickable { isEditingTitle = true }
+                            )
                         }
-                        Text(
-                            text = "Best shot kept • ${cluster.redundantVariants.size} similar extra(s)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = TextSecondary
-                        )
                     }
                 }
 
-                ForensicPillBadge(
-                    text = "Save ${LuminaViewModel.formatBytes(selectedRecoverableBytes)}",
+                RoboPill(
+                    text = if (isCollapsing) {
+                        "✓ +${LuminaViewModel.formatBytes(cluster.recoverableBytes)}"
+                    } else {
+                        "Save ${LuminaViewModel.formatBytes(cluster.recoverableBytes)}"
+                    },
                     accentColor = KeepEmerald
                 )
             }
 
-            // Horizontal Comparison Strip of Cluster Members (strictly keyed by stableIdentityKey)
+            // Collapsed Completed Banner during final stage of Section H animation
+            AnimatedVisibility(
+                visible = isCollapsing,
+                enter = fadeIn(tween(150)) + expandVertically(),
+                exit = fadeOut(tween(150)) + shrinkVertically()
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = KeepEmerald.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, KeepEmerald.copy(alpha = 0.50f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.CheckCircle,
+                            contentDescription = null,
+                            tint = KeepEmerald,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Best Shot kept • ${cluster.redundantVariants.size} extras moved to Review Bin (+${LuminaViewModel.formatBytes(cluster.recoverableBytes)})",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            // Member Thumbnails Strip: Best Shot remains anchored while redundant thumbnails gently stack toward it on resolve!
             LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(vertical = 2.dp)
             ) {
                 items(
                     items = cluster.allMembers,
                     key = { it.stableIdentityKey }
                 ) { member ->
                     val isBest = member.id == cluster.bestShot.id
-                    val isSelectedForBin = !isBest && (member.id !in unselectedIds)
-
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = ElevatedSlate,
-                        border = BorderStroke(
-                            width = if (isBest) 1.5.dp else 1.dp,
-                            color = when {
-                                isBest -> KeepEmerald
-                                isSelectedForBin -> DestructiveRed.copy(alpha = 0.65f)
-                                else -> CardBorderSlate
+                    Box(
+                        modifier = Modifier
+                            .width(136.dp)
+                            .offset(x = if (isBest) 0.dp else redundantStackOffsetDp)
+                            .graphicsLayer {
+                                alpha = if (isBest) 1f else redundantAlpha
+                                scaleX = if (!isBest && isCollapsing) 0.78f else 1f
+                                scaleY = if (!isBest && isCollapsing) 0.78f else 1f
                             }
-                        ),
-                        modifier = Modifier.width(172.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(128.dp)
-                                    .clickable { onInspectPhoto(member) }
+                                    .height(136.dp)
                             ) {
-                                PhotoThumbnailView(
-                                    photo = member,
-                                    modifier = Modifier.fillMaxSize()
-                                )
+                                RoboMediaCard(
+                                    onClick = { onInspectPhotoDetail(member) },
+                                    isBestShot = isBest,
+                                    cornerRadius = 12.dp,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .testTag("cluster_member_${member.id}")
+                                ) {
+                                    PhotoThumbnailView(
+                                        photo = member,
+                                        showBadges = false,
+                                        cornerRadius = 12.dp,
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+
+                                // Best Shot Animated Badge (Pass 4 Section I)
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(6.dp)
+                                ) {
+                                    BestShotAnimatedBadge(
+                                        isBestShot = isBest,
+                                        isUserSelected = member.userSelectedBestShot
+                                    )
+                                }
+
+                                // Tap to nominate as Best Shot button on non-best items
+                                if (!isBest) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = ObsidianBg.copy(alpha = 0.84f),
+                                        border = BorderStroke(1.dp, CardBorderSlate),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomStart)
+                                            .padding(6.dp)
+                                            .clickable { onSelectBestShot(member.id) }
+                                            .testTag("select_best_shot_${member.id}")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Star,
+                                                contentDescription = "Set as Best Shot",
+                                                tint = KeepEmerald,
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                            Text(
+                                                text = "Set Best",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = TextPrimary,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+
+                                    // Remove from cluster (Mark Not Duplicate)
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = ObsidianBg.copy(alpha = 0.82f),
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .padding(6.dp)
+                                            .size(24.dp)
+                                            .clickable { onMarkNotDuplicate(member) }
+                                            .testTag("mark_not_duplicate_${member.id}")
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Close,
+                                                contentDescription = "Keep separate (not a duplicate)",
+                                                tint = TextSecondary,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             Text(
                                 text = member.title,
                                 style = MaterialTheme.typography.labelMedium,
-                                color = TextPrimary,
-                                fontWeight = FontWeight.SemiBold,
+                                color = if (isBest) KeepEmerald else TextPrimary,
+                                fontWeight = if (isBest) FontWeight.Bold else FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = LuminaViewModel.formatBytes(member.fileSizeBytes),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TextSecondary
-                                )
-                                Text(
-                                    text = "Sharp ${member.sharpnessScore}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (isBest) KeepEmerald else TextSecondary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-
-                            HorizontalDivider(color = CardBorderSlate)
-
-                            // Per-item Controls: Preview/Play, Set Best / Toggle Bin, Not Duplicate
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                if (isBest) {
-                                    ForensicPillBadge(
-                                        text = "Kept Best",
-                                        accentColor = KeepEmerald
-                                    )
-                                } else {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isSelectedForBin) {
-                                            DestructiveRed.copy(alpha = 0.16f)
-                                        } else {
-                                            CharcoalSurface
-                                        },
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (isSelectedForBin) DestructiveRed.copy(alpha = 0.5f) else CardBorderSlate
-                                        ),
-                                        modifier = Modifier.clickable {
-                                            unselectedIds = if (member.id in unselectedIds) {
-                                                unselectedIds - member.id
-                                            } else {
-                                                unselectedIds + member.id
-                                            }
-                                        }
-                                    ) {
-                                        Text(
-                                            text = if (isSelectedForBin) "In Bin Queue" else "Keep Also",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (isSelectedForBin) DestructiveRed else TextPrimary,
-                                            fontWeight = FontWeight.SemiBold,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
-                                    }
-                                }
-
-                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    if (!isBest) {
-                                        IconButton(
-                                            onClick = { onSelectBestShot(member.id) },
-                                            modifier = Modifier
-                                                .size(28.dp)
-                                                .testTag("set_best_shot_${member.id}")
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.Star,
-                                                contentDescription = "Make Best Shot",
-                                                tint = SpineAmber,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    }
-                                    IconButton(
-                                        onClick = { onMarkNotDuplicate(member) },
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .testTag("not_duplicate_${member.id}")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.LinkOff,
-                                            contentDescription = "Not a duplicate",
-                                            tint = TextSecondary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            }
+                            Text(
+                                text = "Sharp ${member.sharpnessScore} • ${LuminaViewModel.formatBytes(member.fileSizeBytes)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextSecondary,
+                                maxLines = 1
+                            )
                         }
                     }
                 }
             }
 
-            // Cluster Action Row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                OutlinedButton(
-                    onClick = { onInspectPhoto(cluster.bestShot) },
-                    shape = RoundedCornerShape(12.dp),
-                    border = BorderStroke(1.dp, CardBorderSlate),
-                    modifier = Modifier.weight(1f)
+            // Why Best Shot was nominated (concise pills)
+            if (cluster.bestShotExplanations.isNotEmpty() && !isCollapsing) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(
-                        imageVector = if (cluster.bestShot.isVideo) Icons.Filled.PlayArrow else Icons.Filled.Compare,
-                        contentDescription = null,
-                        tint = ElectricBlue,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = if (cluster.bestShot.isVideo) "Preview Video" else "Compare",
-                        color = TextPrimary
-                    )
+                    cluster.bestShotExplanations.take(3).forEach { reason ->
+                        RoboPill(
+                            text = "Best Shot: $reason",
+                            accentColor = KeepEmerald
+                        )
+                    }
                 }
+            }
 
-                Button(
-                    onClick = { onVaultRedundant(selectedExtras) },
-                    enabled = selectedExtras.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = ElectricBlue,
-                        contentColor = Color.White
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .weight(1.3f)
-                        .testTag("cluster_vault_extras_${cluster.clusterId}")
+            // Action Buttons: [ Flicker Compare ] | [ Keep Best & Bin Extras ]
+            if (!isCollapsing) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.DeleteOutline,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                    RoboSecondaryButton(
+                        text = "Flicker Compare",
+                        icon = Icons.Filled.Compare,
+                        iconTint = ElectricBlue,
+                        onClick = onOpenFlickerCompare,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("flicker_compare_cluster_${cluster.clusterId}")
                     )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        text = "Bin ${selectedExtras.size} Extra(s)",
-                        fontWeight = FontWeight.Bold
+
+                    RoboPrimaryButton(
+                        text = "Bin ${cluster.redundantVariants.size} Extra(s)",
+                        icon = Icons.Filled.DeleteSweep,
+                        containerColor = ElectricBlue,
+                        onClick = onResolveCluster,
+                        modifier = Modifier
+                            .weight(1.15f)
+                            .testTag("resolve_cluster_${cluster.clusterId}")
                     )
                 }
             }
@@ -683,68 +1065,130 @@ private fun DuplicateClusterCard(
 }
 
 @Composable
-private fun CollectionItemRow(
-    photo: PhotoEntity,
-    onInspect: () -> Unit,
-    onMoveToBin: () -> Unit
+private fun ScreenshotCleanupCollectionCard(
+    screenshots: List<PhotoEntity>,
+    onReviewScreenshots: () -> Unit,
+    onInspectPhotoDetail: (PhotoEntity) -> Unit
 ) {
-    key(photo.stableIdentityKey) {
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onInspect),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = CharcoalSurface),
-            border = BorderStroke(1.dp, CardBorderSlate)
-        ) {
+    RoboCard {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                PhotoThumbnailView(
-                    photo = photo,
-                    modifier = Modifier.size(64.dp)
-                )
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
+                Column {
                     Text(
-                        text = photo.title,
-                        style = MaterialTheme.typography.titleSmall,
+                        text = "Screenshots Collection",
+                        style = MaterialTheme.typography.titleMedium,
                         color = TextPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "${photo.folderName} • ${LuminaViewModel.formatBytes(photo.fileSizeBytes)}",
+                        text = "${screenshots.size} screenshots • ${LuminaViewModel.formatBytes(screenshots.sumOf { it.fileSizeBytes })}",
                         style = MaterialTheme.typography.bodySmall,
                         color = TextSecondary
                     )
-                    Text(
-                        text = photo.humanFriendlyWhy,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = TextMuted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
-                IconButton(
-                    onClick = onMoveToBin,
-                    modifier = Modifier
-                        .size(38.dp)
-                        .clip(CircleShape)
-                        .background(ElevatedSlate)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.DeleteOutline,
-                        contentDescription = "Move to Review Bin",
-                        tint = DestructiveRed,
-                        modifier = Modifier.size(18.dp)
+                RoboPrimaryButton(
+                    text = "Review All",
+                    onClick = onReviewScreenshots
+                )
+            }
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(screenshots.take(12), key = { it.stableIdentityKey }) { shot ->
+                    PhotoThumbnailView(
+                        photo = shot,
+                        showBadges = true,
+                        cornerRadius = 10.dp,
+                        modifier = Modifier
+                            .size(96.dp)
+                            .clickable { onInspectPhotoDetail(shot) }
                     )
                 }
             }
         }
     }
+}
+
+/**
+ * Organizes library items into user-friendly Smart Collections (Pass 4 Section P):
+ * - People
+ * - Pets
+ * - Plants
+ * - Receipts
+ * - Documents
+ * - Downloads
+ */
+private fun buildSmartSubjectMap(activePhotos: List<PhotoEntity>): Map<SmartSubjectFilter, List<PhotoEntity>> {
+    val people = activePhotos.filter { photo ->
+        val labels = "${photo.semanticLabels} ${photo.title} ${photo.sceneDescription}".lowercase()
+        photo.faceCount > 0 ||
+            labels.contains("portrait") ||
+            labels.contains("person") ||
+            labels.contains("people") ||
+            labels.contains("selfie") ||
+            labels.contains("family") ||
+            labels.contains("friends") ||
+            photo.categoryEnum == PhotoCategory.PEOPLE
+    }
+
+    val pets = activePhotos.filter { photo ->
+        val labels = "${photo.semanticLabels} ${photo.title} ${photo.sceneDescription}".lowercase()
+        labels.contains("dog") ||
+            labels.contains("cat") ||
+            labels.contains("pet") ||
+            labels.contains("puppy") ||
+            labels.contains("kitten") ||
+            labels.contains("golden retriever") ||
+            labels.contains("animal")
+    }
+
+    val plants = activePhotos.filter { photo ->
+        val labels = "${photo.semanticLabels} ${photo.title} ${photo.sceneDescription}".lowercase()
+        labels.contains("plant") ||
+            labels.contains("flower") ||
+            labels.contains("garden") ||
+            labels.contains("tree") ||
+            labels.contains("leaf") ||
+            labels.contains("botanical") ||
+            labels.contains("nature") ||
+            labels.contains("park")
+    }
+
+    val receipts = activePhotos.filter { photo ->
+        val labels = "${photo.semanticLabels} ${photo.title} ${photo.ocrSnippet}".lowercase()
+        photo.categoryEnum == PhotoCategory.RECEIPT ||
+            labels.contains("receipt") ||
+            labels.contains("invoice") ||
+            labels.contains("total") ||
+            labels.contains("order")
+    }
+
+    val documents = activePhotos.filter { photo ->
+        val labels = "${photo.semanticLabels} ${photo.title} ${photo.ocrSnippet}".lowercase()
+        photo.categoryEnum == PhotoCategory.DOCUMENT ||
+            photo.screenshotSubTypeEnum.isImportantDefault ||
+            labels.contains("document") ||
+            labels.contains("notes") ||
+            labels.contains("whiteboard") ||
+            labels.contains("ticket") ||
+            labels.contains("boarding")
+    }
+
+    val downloads = activePhotos.filter { photo ->
+        photo.categoryEnum == PhotoCategory.DOWNLOAD ||
+            photo.categoryEnum == PhotoCategory.MEME ||
+            photo.bucketName.contains("Download", ignoreCase = true)
+    }
+
+    return mapOf(
+        SmartSubjectFilter.PEOPLE to people,
+        SmartSubjectFilter.PETS to pets,
+        SmartSubjectFilter.PLANTS to plants,
+        SmartSubjectFilter.RECEIPTS to receipts,
+        SmartSubjectFilter.DOCUMENTS to documents,
+        SmartSubjectFilter.DOWNLOADS to downloads
+    )
 }

@@ -1,6 +1,14 @@
 package com.example.ui
 
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -26,6 +34,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CollectionsBookmark
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Swipe
@@ -43,6 +52,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,19 +60,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.local.PhotoEntity
+import com.example.ui.components.AiPrivacyPreviewDialog
 import com.example.ui.components.ByokAiHubSheet
+import com.example.ui.components.CleanupReceiptSheet
+import com.example.ui.components.FlickerCompareDialog
 import com.example.ui.components.GoalPlannerSheet
+import com.example.ui.components.NaturalLanguageCleanupPlanSheet
 import com.example.ui.components.PhotoForensicsDetailSheet
 import com.example.ui.components.TwoStepPermanentDeleteDialog
+import com.example.ui.components.UndoHistorySheet
 import com.example.ui.screens.DuplicatesScreen
 import com.example.ui.screens.QueuesScreen
 import com.example.ui.screens.RulesScreen
@@ -78,6 +94,7 @@ import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.ui.viewmodel.AppDestination
+import com.example.ui.viewmodel.DuplicateClusterGroup
 import com.example.ui.viewmodel.LuminaUiState
 import com.example.ui.viewmodel.LuminaViewModel
 
@@ -85,16 +102,73 @@ import com.example.ui.viewmodel.LuminaViewModel
 fun LuminaApp(
     viewModel: LuminaViewModel
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val currentDestination by viewModel.currentDestination.collectAsStateWithLifecycle()
 
     var showByokSheet by remember { mutableStateOf(false) }
     var showGoalPlannerSheet by remember { mutableStateOf(false) }
     var showTwoStepDeleteDialog by remember { mutableStateOf(false) }
+    var showUndoHistorySheet by remember { mutableStateOf(false) }
+    var activeFlickerClusterId by remember { mutableStateOf<String?>(null) }
     var inspectedPhotoId by remember { mutableStateOf<Long?>(null) }
 
     val inspectedPhoto: PhotoEntity? = remember(uiState.allPhotos, inspectedPhotoId) {
         inspectedPhotoId?.let { id -> uiState.allPhotos.find { it.id == id } }
+    }
+
+    val activeFlickerCluster: DuplicateClusterGroup? = remember(uiState.duplicateClusters, activeFlickerClusterId) {
+        activeFlickerClusterId?.let { cid -> uiState.duplicateClusters.find { it.clusterId == cid } }
+    }
+
+    val requiredMediaPermissions = remember {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(
+                Manifest.permission.READ_MEDIA_IMAGES,
+                Manifest.permission.READ_MEDIA_VIDEO
+            )
+        } else {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        }
+    }
+
+    var hasMediaPerm by remember {
+        mutableStateOf(
+            requiredMediaPermissions.any { perm ->
+                ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+            }
+        )
+    }
+
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grantMap ->
+        hasMediaPerm = grantMap.values.any { it }
+        viewModel.triggerLibraryRescan()
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 50)
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.onPhotosPicked(uris)
+        }
+    }
+
+    val systemDeleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onSystemDeleteDialogResult(result.resultCode == Activity.RESULT_OK)
+    }
+
+    LaunchedEffect(uiState.pendingSystemDeleteRequest) {
+        val pendingRequest = uiState.pendingSystemDeleteRequest ?: return@LaunchedEffect
+        try {
+            val request = IntentSenderRequest.Builder(pendingRequest.intentSender).build()
+            systemDeleteLauncher.launch(request)
+        } catch (_: Exception) {
+            viewModel.onSystemDeleteDialogResult(false)
+        }
     }
 
     if (currentDestination != AppDestination.QUEUES) {
@@ -103,6 +177,7 @@ fun LuminaApp(
         }
     }
 
+    // Pass 4 Section R: Bottom Navigation maintains Home, Review, Collections, Automations
     val primaryNavDestinations = remember {
         listOf(
             AppDestination.QUEUES,
@@ -120,8 +195,10 @@ fun LuminaApp(
             Column {
                 StealthTopHeaderBar(
                     uiState = uiState,
+                    isCompactMode = currentDestination == AppDestination.SWIPE_DECK,
                     isReviewBinActive = currentDestination == AppDestination.TRASH_VAULT,
                     onOpenReviewBin = { viewModel.navigateTo(AppDestination.TRASH_VAULT) },
+                    onOpenUndoHistory = { showUndoHistorySheet = true },
                     onOpenSettings = { showByokSheet = true }
                 )
 
@@ -215,26 +292,41 @@ fun LuminaApp(
                 AppDestination.QUEUES -> {
                     QueuesScreen(
                         uiState = uiState,
-                        onStartSprint = { viewModel.startFiveMinuteSprint() },
-                        onOpenGoalPlanner = { showGoalPlannerSheet = true },
-                        onOpenByokSheet = { showByokSheet = true },
-                        onReviewQueueInSwipe = { queueId -> viewModel.openQueueInSwipeDeck(queueId) },
-                        onBatchVaultQueue = { photos, label ->
-                            viewModel.batchMoveToVault(photos, label)
+                        hasMediaPermission = hasMediaPerm,
+                        onRequestMediaPermissionAndScan = {
+                            if (hasMediaPerm) {
+                                viewModel.triggerLibraryRescan()
+                            } else {
+                                mediaPermissionLauncher.launch(requiredMediaPermissions)
+                            }
                         },
-                        onInspectPhoto = { inspectedPhotoId = it.id },
-                        onSearchQueryChange = { viewModel.updateSearchQuery(it) },
-                        onCategoryFilterSelect = { viewModel.selectCategoryFilter(it) },
-                        onTriggerRescan = { viewModel.triggerLibraryRescan() },
-                        onPhotosPicked = { viewModel.onPhotosPicked(it) }
+                        onLaunchPhotoPicker = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                            )
+                        },
+                        onPauseScan = viewModel::pauseLibraryScan,
+                        onResumeScan = viewModel::resumeLibraryScan,
+                        onCancelScan = viewModel::cancelLibraryScan,
+                        onOpenQueueInDeck = viewModel::openQueueInSwipeDeck,
+                        onQuickReviewCleanupBatch = { batch ->
+                            viewModel.openCustomReviewSet(batch.title, batch.photos)
+                        },
+                        onSelectCategory = viewModel::selectCategoryFilter,
+                        onSearchQueryChange = viewModel::updateSearchQuery,
+                        onInspectPhotoDetail = { inspectedPhotoId = it.id },
+                        onStartSprint = viewModel::startFiveMinuteSprint,
+                        onOpenGoalPlanner = { showGoalPlannerSheet = true },
+                        onOpenAiSuggestion = viewModel::openHomeSuggestionInReview,
+                        onPreviewNaturalCleanupPlan = viewModel::previewNaturalLanguageCleanupPlan,
+                        onOpenTrashVault = { viewModel.navigateTo(AppDestination.TRASH_VAULT) }
                     )
                 }
 
                 AppDestination.SWIPE_DECK -> {
                     SwipeDeckScreen(
                         uiState = uiState,
-                        onSelectQueueFilter = { viewModel.openQueueInSwipeDeck(it) },
-                        onSwipeDecision = { photo, status ->
+                        onSwipeTriage = { photo, status ->
                             viewModel.swipeTriagePhoto(photo, status)
                         },
                         onSkipPhoto = { photo ->
@@ -243,22 +335,52 @@ fun LuminaApp(
                         onResetSkipped = {
                             viewModel.clearSkippedPhotos()
                         },
-                        onUndoLast = { viewModel.undoLastTriage() },
-                        onStopSprint = { viewModel.stopSprintSession() },
-                        onInspectPhoto = { inspectedPhotoId = it.id }
+                        onSelectQueue = { queueId ->
+                            viewModel.openQueueInSwipeDeck(queueId)
+                        },
+                        onClearCustomReviewSet = {
+                            viewModel.clearCustomReviewSet()
+                        },
+                        onUndoLast = {
+                            viewModel.undoLastTriage()
+                        },
+                        onOpenUndoHistory = {
+                            showUndoHistorySheet = true
+                        },
+                        onOpenCleanupReceipt = {
+                            viewModel.openCleanupReceipt()
+                        },
+                        onInspectPhotoDetail = { photo ->
+                            inspectedPhotoId = photo.id
+                        },
+                        onInspectWithAi = { photo ->
+                            viewModel.inspectSinglePhotoWithAi(photo)
+                        },
+                        onStopSprint = {
+                            viewModel.stopSprintSession()
+                        },
+                        onOpenTrashVault = {
+                            viewModel.navigateTo(AppDestination.TRASH_VAULT)
+                        },
+                        onSelectBestShot = { clusterId, photoId ->
+                            viewModel.selectBestShotInCluster(clusterId, photoId)
+                        },
+                        onOpenFlickerCompare = { cluster ->
+                            activeFlickerClusterId = cluster.clusterId
+                        }
                     )
                 }
 
                 AppDestination.CLUSTERS -> {
                     DuplicatesScreen(
                         uiState = uiState,
-                        onVaultRedundantInCluster = { photos, label ->
-                            viewModel.batchMoveToVault(photos, label)
+                        onTrashRedundantForCluster = { cluster ->
+                            viewModel.batchMoveToVault(cluster.redundantVariants, "Cluster ${cluster.title}")
                         },
-                        onVaultAllRedundant = { allExtras ->
-                            viewModel.batchMoveToVault(allExtras, "All Duplicate Extras")
+                        onTrashAllRedundantDuplicates = { allExtras ->
+                            viewModel.batchMoveToVault(allExtras, "Cluster cleanup")
                         },
-                        onInspectPhoto = { inspectedPhotoId = it.id },
+                        onInspectPhotoDetail = { inspectedPhotoId = it.id },
                         onRenameCluster = { clusterId, newTitle ->
                             viewModel.renameDuplicateCluster(clusterId, newTitle)
                         },
@@ -267,6 +389,12 @@ fun LuminaApp(
                         },
                         onSelectBestShot = { clusterId, photoId ->
                             viewModel.selectBestShotInCluster(clusterId, photoId)
+                        },
+                        onSelectCategoryFilter = { category ->
+                            viewModel.selectCategoryFilter(category)
+                        },
+                        onOpenQueueInSwipeDeck = { queueId ->
+                            viewModel.openQueueInSwipeDeck(queueId)
                         }
                     )
                 }
@@ -274,14 +402,22 @@ fun LuminaApp(
                 AppDestination.AI_RULES -> {
                     RulesScreen(
                         uiState = uiState,
-                        onCreateRule = { viewModel.createNaturalLanguageRule(it) },
+                        onCreateRuleFromPrompt = { viewModel.createNaturalLanguageRule(it) },
+                        onPreviewCleanupPlan = { viewModel.previewNaturalLanguageCleanupPlan(it) },
                         onToggleRule = { viewModel.toggleCleanupRule(it) },
-                        onDeleteRule = { viewModel.deleteCleanupRule(it) },
-                        onExecuteRulePreview = { preview ->
-                            viewModel.batchMoveToVault(preview.matchingPhotos, preview.rule.title)
+                        onExecuteRule = { rule ->
+                            val eval = uiState.ruleEvaluations.find { it.rule.id == rule.id }
+                            if (eval != null && eval.matchingPhotos.isNotEmpty()) {
+                                viewModel.batchMoveToVault(eval.matchingPhotos, rule.title)
+                            }
                         },
-                        onOpenGoalPlanner = { showGoalPlannerSheet = true },
-                        onOpenByokSheet = { showByokSheet = true },
+                        onDeleteRule = { viewModel.deleteCleanupRule(it.id) },
+                        onOpenMatchesInReview = { rule ->
+                            val eval = uiState.ruleEvaluations.find { it.rule.id == rule.id }
+                            if (eval != null && eval.matchingPhotos.isNotEmpty()) {
+                                viewModel.openCustomReviewSet(rule.title, eval.matchingPhotos)
+                            }
+                        },
                         onInspectPhoto = { inspectedPhotoId = it.id }
                     )
                 }
@@ -289,7 +425,7 @@ fun LuminaApp(
                 AppDestination.TRASH_VAULT -> {
                     VaultScreen(
                         uiState = uiState,
-                        onRestoreIds = { viewModel.restoreFromVault(it) },
+                        onRestorePhotos = { viewModel.restoreFromVault(it) },
                         onRequestPermanentDeleteModal = { showTwoStepDeleteDialog = true },
                         onInspectPhoto = { inspectedPhotoId = it.id }
                     )
@@ -301,18 +437,48 @@ fun LuminaApp(
     if (showByokSheet) {
         ByokAiHubSheet(
             currentConfig = uiState.aiConfig,
-            totalSpendUsd = uiState.totalApiSpendUsd,
+            todayUsageSummary = uiState.todayUsageSummary,
+            sevenDayUsageSummary = uiState.sevenDayUsageSummary,
+            thirtyDayUsageSummary = uiState.thirtyDayUsageSummary,
+            totalProviderTokens = uiState.totalProviderTokens,
+            securityStorageDescription = uiState.securityStorageDescription,
             encryptedCacheEntries = uiState.encryptedCacheEntries,
             encryptedCacheHitRate = uiState.encryptedCacheHitRate,
             auditLogs = uiState.aiAuditLogs,
             hasKeyForProvider = { viewModel.hasConfiguredKey(it) },
-            onFetchEndpointModels = { endpoint, provider, apiKey ->
-                viewModel.fetchEndpointModels(endpoint, provider, apiKey)
+            onFetchEndpointModels = { endpoint, provider, apiKey, forceRefresh ->
+                viewModel.fetchEndpointModels(endpoint, provider, apiKey, forceRefresh)
+            },
+            onTestConnection = { draftConfig, catalogOverride ->
+                viewModel.testAiConnection(draftConfig, catalogOverride)
             },
             onSaveConfig = { viewModel.updateAiAdapterConfig(it) },
-            onRunBatchAiPass = { viewModel.runBatchByokAiPass() },
+            onRunBatchAiPass = { viewModel.requestBatchByokAiPass() },
             onClearEncryptedCache = { viewModel.clearEncryptedCache() },
             onDismiss = { showByokSheet = false }
+        )
+    }
+
+    uiState.pendingPrivacyPreview?.let { privacyPreview ->
+        AiPrivacyPreviewDialog(
+            preview = privacyPreview,
+            onConfirmAnalyze = { rememberPreference ->
+                viewModel.confirmPrivacyPreviewAndAnalyze(rememberPreference)
+            },
+            onDismiss = { viewModel.dismissPrivacyPreview() }
+        )
+    }
+
+    uiState.activeNaturalCleanupPlan?.let { cleanupPlan ->
+        NaturalLanguageCleanupPlanSheet(
+            plan = cleanupPlan,
+            onReviewCandidates = { plan ->
+                viewModel.reviewNaturalCleanupPlan(plan)
+            },
+            onSaveAutomation = { plan ->
+                viewModel.saveCleanupPlanAsAutomation(plan)
+            },
+            onDismiss = { viewModel.dismissNaturalCleanupPlan() }
         )
     }
 
@@ -323,6 +489,9 @@ fun LuminaApp(
             onUpdateTargetMb = { viewModel.updateGoalTargetMb(it) },
             onExecutePlanToVault = { photos ->
                 viewModel.batchMoveToVault(photos, "Goal Plan (${uiState.goalTargetMegabytes} MB)")
+            },
+            onReviewSelectedPhotos = { photos ->
+                viewModel.openCustomReviewSet("Space Goal Plan", photos)
             },
             onDismiss = { showGoalPlannerSheet = false }
         )
@@ -337,6 +506,43 @@ fun LuminaApp(
                 showTwoStepDeleteDialog = false
             },
             onDismiss = { showTwoStepDeleteDialog = false }
+        )
+    }
+
+    if (showUndoHistorySheet) {
+        UndoHistorySheet(
+            undoHistory = uiState.undoHistory,
+            onUndoAt = { idx ->
+                viewModel.undoDecisionAt(idx)
+            },
+            onDismiss = { showUndoHistorySheet = false }
+        )
+    }
+
+    if (uiState.showCleanupReceipt) {
+        CleanupReceiptSheet(
+            reviewedCount = uiState.sessionReviewedCount,
+            keptCount = uiState.sessionKeptCount,
+            movedToBinCount = uiState.sessionMovedToBinCount,
+            readyToRecoverBytes = uiState.vaultRecoverableBytes.coerceAtLeast(uiState.sessionSavedBytes),
+            verifiedPermanentlyDeletedBytes = uiState.lastDeletionResult?.confirmedFreedBytes ?: 0L,
+            verifiedPermanentlyDeletedCount = uiState.lastDeletionResult?.confirmedDeletedCount ?: 0,
+            isFiveMinuteSprintCompletion = uiState.isSprintCompletionReceipt,
+            onOpenReviewBin = { viewModel.navigateTo(AppDestination.TRASH_VAULT) },
+            onDismiss = { viewModel.dismissCleanupReceipt() }
+        )
+    }
+
+    if (activeFlickerCluster != null) {
+        FlickerCompareDialog(
+            cluster = activeFlickerCluster,
+            onSelectBestShot = { cid, pid ->
+                viewModel.selectBestShotInCluster(cid, pid)
+            },
+            onMoveExtraToBin = { extraPhoto ->
+                viewModel.swipeTriagePhoto(extraPhoto, com.example.data.local.TriageStatus.TRASH_VAULT)
+            },
+            onDismiss = { activeFlickerClusterId = null }
         )
     }
 
@@ -355,8 +561,10 @@ fun LuminaApp(
 @Composable
 private fun StealthTopHeaderBar(
     uiState: LuminaUiState,
+    isCompactMode: Boolean,
     isReviewBinActive: Boolean,
     onOpenReviewBin: () -> Unit,
+    onOpenUndoHistory: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     Surface(
@@ -367,7 +575,10 @@ private fun StealthTopHeaderBar(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(
+                        horizontal = 16.dp,
+                        vertical = if (isCompactMode) 6.dp else 10.dp
+                    ),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -377,7 +588,11 @@ private fun StealthTopHeaderBar(
                 ) {
                     Text(
                         text = stringResource(R.string.app_name),
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = if (isCompactMode) {
+                            MaterialTheme.typography.titleMedium
+                        } else {
+                            MaterialTheme.typography.headlineMedium
+                        },
                         color = TextPrimary,
                         fontWeight = FontWeight.Bold
                     )
@@ -394,6 +609,25 @@ private fun StealthTopHeaderBar(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // Undo History icon button
+                    if (uiState.undoHistory.isNotEmpty()) {
+                        IconButton(
+                            onClick = onOpenUndoHistory,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(CharcoalSurface)
+                                .testTag("top_bar_undo_history_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.History,
+                                contentDescription = "Recent Decisions History",
+                                tint = ElectricBlue,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+
                     // Review Bin pill button
                     val binCount = uiState.vaultPhotos.size
                     Surface(
@@ -418,7 +652,7 @@ private fun StealthTopHeaderBar(
                             .testTag("nav_tab_trash_vault")
                     ) {
                         Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
@@ -445,7 +679,7 @@ private fun StealthTopHeaderBar(
                     IconButton(
                         onClick = onOpenSettings,
                         modifier = Modifier
-                            .size(38.dp)
+                            .size(36.dp)
                             .clip(CircleShape)
                             .background(CharcoalSurface)
                             .testTag("top_bar_byok_button")
@@ -454,7 +688,7 @@ private fun StealthTopHeaderBar(
                             imageVector = Icons.Filled.Settings,
                             contentDescription = "Settings & AI Profiles",
                             tint = TextSecondary,
-                            modifier = Modifier.size(19.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                 }

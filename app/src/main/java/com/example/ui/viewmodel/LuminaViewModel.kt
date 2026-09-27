@@ -1,20 +1,38 @@
 package com.example.ui.viewmodel
 
+import android.content.IntentSender
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AiAuditLogEntity
 import com.example.data.local.CleanupRuleEntity
+import com.example.data.local.MediaClusterType
 import com.example.data.local.PhotoCategory
 import com.example.data.local.PhotoEntity
 import com.example.data.local.TriageStatus
 import com.example.data.repository.LuminaRepository
 import com.example.domain.ai.AiAdapterConfig
+import com.example.domain.ai.AiConnectionTestResult
+import com.example.domain.ai.AiHomeSuggestion
+import com.example.domain.ai.AiPrivacyPreview
 import com.example.domain.ai.AiProviderType
+import com.example.domain.ai.AiUsageSummary
+import com.example.domain.ai.AiWorkflowsAndUsageEngine
+import com.example.domain.ai.NaturalLanguageCleanupPlan
+import com.example.domain.ai.PrivacyMode
+import com.example.domain.ai.UsageRangeOption
 import com.example.domain.rules.GoalCleanupPlan
 import com.example.domain.rules.NaturalLanguageRuleEngine
 import com.example.domain.rules.RuleEvaluationPreview
+import com.example.domain.scanner.CandidateIndexEngine
+import com.example.domain.scanner.DeletionExecutionOutcome
+import com.example.domain.scanner.DeletionResult
+import com.example.domain.scanner.FailedDeletionItem
+import com.example.domain.scanner.MediaCluster
+import com.example.domain.scanner.MediaIdentityVerifier
+import com.example.domain.scanner.ScanProgress
+import com.example.domain.scanner.VerifiedUndoEntry
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,25 +68,53 @@ data class DuplicateClusterGroup(
     val bestShot: PhotoEntity,
     val redundantVariants: List<PhotoEntity>,
     val allMembers: List<PhotoEntity>,
-    val recoverableBytes: Long
-)
+    val recoverableBytes: Long,
+    val type: MediaClusterType = MediaClusterType.NEAR_DUPLICATE,
+    val confidence: Float = 0.90f,
+    val reason: String = "Similar media group",
+    val bestShotExplanations: List<String> = emptyList(),
+    val clusterGenerationVersion: Int = MediaCluster.CLUSTER_GENERATION_VERSION
+) {
+    val bestShotCandidate: PhotoEntity
+        get() = bestShot
+
+    val members: List<PhotoEntity>
+        get() = allMembers
+}
 
 data class UndoTriageRecord(
-    val photoIds: List<Long>,
-    val previousStatuses: Map<Long, TriageStatus>,
-    val description: String
+    val entries: List<VerifiedUndoEntry>,
+    val description: String,
+    val actionCategory: String = "Review decision",
+    val bytesAffected: Long = 0L,
+    val bestShotRevertClusterId: String? = null,
+    val bestShotRevertPhotoId: Long? = null,
+    val timestampEpochMs: Long = System.currentTimeMillis()
+) {
+    val photoIds: List<Long>
+        get() = entries.map { it.photoId }
+}
+
+data class PendingSystemDeleteRequest(
+    val totalRequestedCount: Int,
+    val intentSender: IntentSender,
+    val pendingItems: List<PhotoEntity>,
+    val partialDirectDeletedCount: Int,
+    val partialDirectFreedBytes: Long,
+    val preFailedItems: List<FailedDeletionItem>
 )
 
 data class SprintSessionState(
     val isActive: Boolean = false,
     val remainingSeconds: Int = 300,
-    val targetCount: Int = 15,
+    val targetCount: Int = 25,
     val completedCount: Int = 0,
     val recoveredBytesInSprint: Long = 0L
 )
 
 data class LuminaUiState(
     val isScanning: Boolean = false,
+    val scanProgress: ScanProgress = ScanProgress(),
     val statusBannerMessage: String? = null,
     val allPhotos: List<PhotoEntity> = emptyList(),
     val activePhotos: List<PhotoEntity> = emptyList(),
@@ -78,21 +124,73 @@ data class LuminaUiState(
     val cleanupRules: List<CleanupRuleEntity> = emptyList(),
     val ruleEvaluations: List<RuleEvaluationPreview> = emptyList(),
     val aiAuditLogs: List<AiAuditLogEntity> = emptyList(),
-    val totalApiSpendUsd: Double = 0.0,
+    val totalProviderTokens: Long = 0L,
     val aiConfig: AiAdapterConfig = AiAdapterConfig(),
+    val todayUsageSummary: AiUsageSummary = AiUsageSummary(
+        rangeOption = UsageRangeOption.TODAY,
+        totalTokens = 0L,
+        inputTokens = 0L,
+        outputTokens = 0L,
+        requestCount = 0,
+        actualRequestCount = 0,
+        estimatedRequestCount = 0,
+        cachedHitCount = 0,
+        localAnalysisCount = 0,
+        activeProviderLabel = "Custom",
+        activeModelLabel = "gpt-4o-mini"
+    ),
+    val sevenDayUsageSummary: AiUsageSummary = AiUsageSummary(
+        rangeOption = UsageRangeOption.LAST_7_DAYS,
+        totalTokens = 0L,
+        inputTokens = 0L,
+        outputTokens = 0L,
+        requestCount = 0,
+        actualRequestCount = 0,
+        estimatedRequestCount = 0,
+        cachedHitCount = 0,
+        localAnalysisCount = 0,
+        activeProviderLabel = "Custom",
+        activeModelLabel = "gpt-4o-mini"
+    ),
+    val thirtyDayUsageSummary: AiUsageSummary = AiUsageSummary(
+        rangeOption = UsageRangeOption.LAST_30_DAYS,
+        totalTokens = 0L,
+        inputTokens = 0L,
+        outputTokens = 0L,
+        requestCount = 0,
+        actualRequestCount = 0,
+        estimatedRequestCount = 0,
+        cachedHitCount = 0,
+        localAnalysisCount = 0,
+        activeProviderLabel = "Custom",
+        activeModelLabel = "gpt-4o-mini"
+    ),
+    val homeSuggestions: List<AiHomeSuggestion> = emptyList(),
+    val activeNaturalCleanupPlan: NaturalLanguageCleanupPlan? = null,
+    val pendingPrivacyPreview: AiPrivacyPreview? = null,
+    val customReviewSetTitle: String? = null,
+    val customReviewSetPhotos: List<PhotoEntity>? = null,
     val encryptedCacheEntries: Int = 0,
     val encryptedCacheHitRate: Int = 96,
     val encryptedCacheSizeBytes: Long = 0L,
+    val securityStorageDescription: String = "",
     val searchQuery: String = "",
     val selectedCategoryFilter: PhotoCategory? = null,
     val activeQueueIdForSwipe: String? = null,
     val skippedPhotoIds: Set<Long> = emptySet(),
+    val undoHistory: List<UndoTriageRecord> = emptyList(),
     val lastUndoRecord: UndoTriageRecord? = null,
+    val pendingSystemDeleteRequest: PendingSystemDeleteRequest? = null,
+    val lastDeletionResult: DeletionResult? = null,
     val sprintState: SprintSessionState = SprintSessionState(),
-    val goalTargetMegabytes: Int = 50,
+    val goalTargetMegabytes: Int = 500,
     val currentGoalPlan: GoalCleanupPlan? = null,
     val sessionSavedBytes: Long = 0L,
-    val sessionReviewedCount: Int = 0
+    val sessionReviewedCount: Int = 0,
+    val sessionKeptCount: Int = 0,
+    val sessionMovedToBinCount: Int = 0,
+    val showCleanupReceipt: Boolean = false,
+    val isSprintCompletionReceipt: Boolean = false
 ) {
     val totalLibraryBytes: Long
         get() = allPhotos.sumOf { it.fileSizeBytes }
@@ -130,11 +228,21 @@ class LuminaViewModel(
     private val _activeSwipeQueueId = MutableStateFlow<String?>(null)
     private val _skippedPhotoIds = MutableStateFlow<Set<Long>>(emptySet())
     private val _aiConfig = MutableStateFlow(repository.loadAiConfig())
-    private val _lastUndo = MutableStateFlow<UndoTriageRecord?>(null)
+    private val _undoHistory = MutableStateFlow<List<UndoTriageRecord>>(emptyList())
+    private val _pendingSystemDelete = MutableStateFlow<PendingSystemDeleteRequest?>(null)
+    private val _lastDeletionResult = MutableStateFlow<DeletionResult?>(null)
     private val _sprintState = MutableStateFlow(SprintSessionState())
-    private val _goalTargetMb = MutableStateFlow(50)
+    private val _goalTargetMb = MutableStateFlow(500)
     private val _sessionSavedBytes = MutableStateFlow(0L)
     private val _sessionReviewedCount = MutableStateFlow(0)
+    private val _sessionKeptCount = MutableStateFlow(0)
+    private val _sessionMovedToBinCount = MutableStateFlow(0)
+    private val _showCleanupReceipt = MutableStateFlow(false)
+    private val _isSprintCompletionReceipt = MutableStateFlow(false)
+    private val _activeNaturalCleanupPlan = MutableStateFlow<NaturalLanguageCleanupPlan?>(null)
+    private val _pendingPrivacyPreview = MutableStateFlow<AiPrivacyPreview?>(null)
+    private val _customReviewSetTitle = MutableStateFlow<String?>(null)
+    private val _customReviewSetPhotos = MutableStateFlow<List<PhotoEntity>?>(null)
 
     private var sprintTimerJob: Job? = null
 
@@ -142,7 +250,7 @@ class LuminaViewModel(
         val photos: List<PhotoEntity>,
         val rules: List<CleanupRuleEntity>,
         val logs: List<AiAuditLogEntity>,
-        val spend: Double
+        val totalTokens: Long
     )
 
     private data class FilterStateBundle(
@@ -153,33 +261,54 @@ class LuminaViewModel(
         val swipeQueueId: String?,
         val skippedIds: Set<Long>,
         val aiCfg: AiAdapterConfig,
-        val undo: UndoTriageRecord?,
+        val undoStack: List<UndoTriageRecord>,
+        val pendingDelete: PendingSystemDeleteRequest?,
+        val lastDeleteResult: DeletionResult?,
         val sprint: SprintSessionState,
         val goalMb: Int,
         val sessionSaved: Long,
-        val sessionReviewed: Int
+        val sessionReviewed: Int,
+        val sessionKept: Int,
+        val sessionMovedToBin: Int,
+        val showReceipt: Boolean,
+        val sprintReceipt: Boolean,
+        val activeCleanupPlan: NaturalLanguageCleanupPlan?,
+        val pendingPrivacy: AiPrivacyPreview?,
+        val customReviewTitle: String?,
+        val customReviewPhotos: List<PhotoEntity>?
     )
 
     private val coreBundleFlow = combine(
         repository.allPhotosFlow,
         repository.cleanupRulesFlow,
         repository.aiAuditLogsFlow,
-        repository.totalApiSpendUsdFlow
-    ) { photos, rules, logs, spend ->
-        CoreFlowsBundle(photos, rules, logs, spend)
+        repository.totalProviderTokensFlow
+    ) { photos, rules, logs, tokens ->
+        CoreFlowsBundle(photos, rules, logs, tokens)
     }
 
     private val filterBundleFlow = combine(
         combine(_isScanning, _statusMessage, _searchQuery, _selectedCategory) { a, b, c, d ->
             listOf(a, b, c, d)
         },
-        combine(_activeSwipeQueueId, _skippedPhotoIds, _aiConfig, _lastUndo) { e, f, g, h ->
+        combine(_activeSwipeQueueId, _skippedPhotoIds, _aiConfig, _undoHistory) { e, f, g, h ->
             listOf(e, f, g, h)
         },
         combine(_sprintState, _goalTargetMb, _sessionSavedBytes, _sessionReviewedCount) { i, j, k, l ->
             listOf(i, j, k, l)
+        },
+        combine(_pendingSystemDelete, _lastDeletionResult, _activeNaturalCleanupPlan, _pendingPrivacyPreview) { m, n, o, p ->
+            listOf(m, n, o, p)
+        },
+        combine(
+            combine(_customReviewSetTitle, _customReviewSetPhotos) { q, r -> listOf(q, r) },
+            combine(_sessionKeptCount, _sessionMovedToBinCount, _showCleanupReceipt, _isSprintCompletionReceipt) { s, t, u, v ->
+                listOf(s, t, u, v)
+            }
+        ) { customPair, receiptQuad ->
+            customPair + receiptQuad
         }
-    ) { first, second, third ->
+    ) { first, second, third, fourth, fifth ->
         @Suppress("UNCHECKED_CAST")
         FilterStateBundle(
             isScanning = first[0] as Boolean,
@@ -189,18 +318,29 @@ class LuminaViewModel(
             swipeQueueId = second[0] as String?,
             skippedIds = second[1] as Set<Long>,
             aiCfg = second[2] as AiAdapterConfig,
-            undo = second[3] as UndoTriageRecord?,
+            undoStack = second[3] as List<UndoTriageRecord>,
+            pendingDelete = fourth[0] as PendingSystemDeleteRequest?,
+            lastDeleteResult = fourth[1] as DeletionResult?,
             sprint = third[0] as SprintSessionState,
             goalMb = third[1] as Int,
             sessionSaved = third[2] as Long,
-            sessionReviewed = third[3] as Int
+            sessionReviewed = third[3] as Int,
+            activeCleanupPlan = fourth[2] as NaturalLanguageCleanupPlan?,
+            pendingPrivacy = fourth[3] as AiPrivacyPreview?,
+            customReviewTitle = fifth[0] as String?,
+            customReviewPhotos = fifth[1] as List<PhotoEntity>?,
+            sessionKept = fifth[2] as Int,
+            sessionMovedToBin = fifth[3] as Int,
+            showReceipt = fifth[4] as Boolean,
+            sprintReceipt = fifth[5] as Boolean
         )
     }
 
     val uiState: StateFlow<LuminaUiState> = combine(
         coreBundleFlow,
-        filterBundleFlow
-    ) { core, filter ->
+        filterBundleFlow,
+        repository.scanProgressFlow
+    ) { core, filter, scanProgress ->
         val activePhotos = core.photos.filter { it.triageStatusEnum != TriageStatus.TRASH_VAULT }
         val vaultPhotos = core.photos.filter { it.triageStatusEnum == TriageStatus.TRASH_VAULT }
 
@@ -213,9 +353,25 @@ class LuminaViewModel(
             targetBytes = filter.goalMb * 1_000_000L,
             allPhotos = core.photos
         )
+        val todayUsage = AiWorkflowsAndUsageEngine.computeTodayUsageSummary(
+            allLogs = core.logs,
+            activeConfig = filter.aiCfg
+        )
+        val sevenDayUsage = AiWorkflowsAndUsageEngine.computeUsageSummary(
+            allLogs = core.logs,
+            rangeOption = UsageRangeOption.LAST_7_DAYS,
+            activeConfig = filter.aiCfg
+        )
+        val thirtyDayUsage = AiWorkflowsAndUsageEngine.computeUsageSummary(
+            allLogs = core.logs,
+            rangeOption = UsageRangeOption.LAST_30_DAYS,
+            activeConfig = filter.aiCfg
+        )
+        val suggestions = AiWorkflowsAndUsageEngine.generateHomeSuggestions(activePhotos)
 
         LuminaUiState(
-            isScanning = filter.isScanning,
+            isScanning = filter.isScanning || scanProgress.isActive,
+            scanProgress = scanProgress,
             statusBannerMessage = filter.banner,
             allPhotos = core.photos,
             activePhotos = activePhotos,
@@ -225,21 +381,37 @@ class LuminaViewModel(
             cleanupRules = core.rules,
             ruleEvaluations = ruleEvaluations,
             aiAuditLogs = core.logs,
-            totalApiSpendUsd = core.spend,
+            totalProviderTokens = core.totalTokens,
             aiConfig = filter.aiCfg,
+            todayUsageSummary = todayUsage,
+            sevenDayUsageSummary = sevenDayUsage,
+            thirtyDayUsageSummary = thirtyDayUsage,
+            homeSuggestions = suggestions,
+            activeNaturalCleanupPlan = filter.activeCleanupPlan,
+            pendingPrivacyPreview = filter.pendingPrivacy,
+            customReviewSetTitle = filter.customReviewTitle,
+            customReviewSetPhotos = filter.customReviewPhotos,
             encryptedCacheEntries = repository.encryptedCache.entryCount(),
             encryptedCacheHitRate = repository.encryptedCache.hitRatePercent(),
             encryptedCacheSizeBytes = repository.encryptedCache.encryptedSizeBytes(),
+            securityStorageDescription = repository.encryptedCache.securityStorageDescription(),
             searchQuery = filter.query,
             selectedCategoryFilter = filter.category,
             activeQueueIdForSwipe = filter.swipeQueueId,
             skippedPhotoIds = filter.skippedIds,
-            lastUndoRecord = filter.undo,
+            undoHistory = filter.undoStack,
+            lastUndoRecord = filter.undoStack.firstOrNull(),
+            pendingSystemDeleteRequest = filter.pendingDelete,
+            lastDeletionResult = filter.lastDeleteResult,
             sprintState = filter.sprint,
             goalTargetMegabytes = filter.goalMb,
             currentGoalPlan = goalPlan,
             sessionSavedBytes = filter.sessionSaved,
-            sessionReviewedCount = filter.sessionReviewed
+            sessionReviewedCount = filter.sessionReviewed,
+            sessionKeptCount = filter.sessionKept,
+            sessionMovedToBinCount = filter.sessionMovedToBin,
+            showCleanupReceipt = filter.showReceipt,
+            isSprintCompletionReceipt = filter.sprintReceipt
         )
     }.stateIn(
         scope = viewModelScope,
@@ -255,14 +427,33 @@ class LuminaViewModel(
         }
     }
 
+    private fun pushUndoRecord(record: UndoTriageRecord) {
+        _undoHistory.value = (listOf(record) + _undoHistory.value).take(MAX_UNDO_HISTORY_SIZE)
+    }
+
     fun navigateTo(destination: AppDestination) {
         _currentDestination.value = destination
     }
 
     fun openQueueInSwipeDeck(queueId: String?) {
+        _customReviewSetPhotos.value = null
+        _customReviewSetTitle.value = null
         _activeSwipeQueueId.value = queueId
         _skippedPhotoIds.value = emptySet()
         _currentDestination.value = AppDestination.SWIPE_DECK
+    }
+
+    fun openCustomReviewSet(title: String, photos: List<PhotoEntity>) {
+        _customReviewSetTitle.value = title
+        _customReviewSetPhotos.value = photos
+        _activeSwipeQueueId.value = null
+        _skippedPhotoIds.value = emptySet()
+        _currentDestination.value = AppDestination.SWIPE_DECK
+    }
+
+    fun clearCustomReviewSet() {
+        _customReviewSetTitle.value = null
+        _customReviewSetPhotos.value = null
     }
 
     fun openCategoryInCollections(category: PhotoCategory?) {
@@ -282,12 +473,34 @@ class LuminaViewModel(
         _statusMessage.value = null
     }
 
-    fun triggerLibraryRescan() {
+    fun openCleanupReceipt() {
+        _isSprintCompletionReceipt.value = false
+        _showCleanupReceipt.value = true
+    }
+
+    fun dismissCleanupReceipt() {
+        _showCleanupReceipt.value = false
+        _isSprintCompletionReceipt.value = false
+    }
+
+    fun dismissLastDeletionResult() {
+        _lastDeletionResult.value = null
+    }
+
+    fun triggerLibraryRescan(resumeFromCheckpoint: Boolean = false) {
         viewModelScope.launch {
             _isScanning.value = true
-            _statusMessage.value = "Scanning phone photos & videos..."
-            delay(200)
-            val newCount = repository.rescanAndClusterLibrary()
+            _statusMessage.value = if (resumeFromCheckpoint) {
+                "Resuming library scan..."
+            } else {
+                "Scanning phone photos & videos..."
+            }
+            delay(100)
+            val newCount = if (resumeFromCheckpoint) {
+                repository.scanFullPhoneMediaLibrary(resumeFromCheckpoint = true)
+            } else {
+                repository.rescanAndClusterLibrary()
+            }
             _isScanning.value = false
             val totalNow = uiState.value.allPhotos.size
             _statusMessage.value = if (newCount > 0) {
@@ -298,6 +511,23 @@ class LuminaViewModel(
                 "Grant photo & video permission or pick from Google Photos to begin."
             }
         }
+    }
+
+    fun pauseLibraryScan() {
+        repository.pauseIncrementalScan()
+        _isScanning.value = false
+        _statusMessage.value = "Library scan paused. You can resume anytime."
+    }
+
+    fun resumeLibraryScan() {
+        repository.resumeIncrementalScan()
+        triggerLibraryRescan(resumeFromCheckpoint = true)
+    }
+
+    fun cancelLibraryScan() {
+        repository.cancelIncrementalScan()
+        _isScanning.value = false
+        _statusMessage.value = "Library scan cancelled."
     }
 
     fun onPhotosPicked(uris: List<Uri>) {
@@ -320,40 +550,72 @@ class LuminaViewModel(
     }
 
     /**
-     * Identity-verified swipe triage: verifies both `photo.id` and `photo.uriString` before updating
-     * the database so the item shown on the card is guaranteed to be the item acted upon.
+     * P0 Identity-verified swipe triage:
+     * Verifies both `photo.id` and `photo.uriString` (plus revision metadata) against the database row.
+     * NEVER falls back to updating by ID alone. If verification fails, no mutation occurs and the
+     * user sees a non-alarming refresh notice.
      */
     fun swipeTriagePhoto(photo: PhotoEntity, targetStatus: TriageStatus) {
         viewModelScope.launch {
             val prevStatus = photo.triageStatusEnum
-            val verified = repository.triagePhotoVerified(photo, targetStatus)
-            if (!verified) {
-                repository.triagePhoto(photo.id, targetStatus)
+            val outcome = repository.triagePhotoVerified(photo, targetStatus)
+            if (!outcome.allSucceeded) {
+                _statusMessage.value = outcome.userRefreshNotice
+                    ?: MediaIdentityVerifier.STALE_SINGLE_ITEM_NOTICE
+                return@launch
             }
 
             _sessionReviewedCount.value += 1
             if (targetStatus == TriageStatus.TRASH_VAULT) {
                 _sessionSavedBytes.value += photo.fileSizeBytes
+                _sessionMovedToBinCount.value += 1
+            } else if (targetStatus == TriageStatus.KEEP) {
+                _sessionKeptCount.value += 1
             }
 
-            _lastUndo.value = UndoTriageRecord(
-                photoIds = listOf(photo.id),
-                previousStatuses = mapOf(photo.id to prevStatus),
-                description = "${photo.title} → ${targetStatus.label}"
+            val actionPrefix = when (targetStatus) {
+                TriageStatus.TRASH_VAULT -> "Review Bin"
+                TriageStatus.KEEP -> "Keep"
+                TriageStatus.FAVORITE_ARCHIVE -> "Favorite"
+                TriageStatus.UNREVIEWED -> "Unreviewed"
+            }
+            val categoryLabel = when (targetStatus) {
+                TriageStatus.TRASH_VAULT -> "Moved to Review Bin"
+                TriageStatus.KEEP -> "Kept safe"
+                TriageStatus.FAVORITE_ARCHIVE -> "Saved to Favorites"
+                TriageStatus.UNREVIEWED -> "Reset to Unreviewed"
+            }
+
+            pushUndoRecord(
+                UndoTriageRecord(
+                    entries = listOf(
+                        VerifiedUndoEntry(
+                            photoId = photo.id,
+                            expectedUri = photo.uriString,
+                            previousStatus = prevStatus
+                        )
+                    ),
+                    description = "$actionPrefix — ${photo.title}",
+                    actionCategory = categoryLabel,
+                    bytesAffected = photo.fileSizeBytes
+                )
             )
 
             if (_sprintState.value.isActive) {
                 val cur = _sprintState.value
                 val addedBytes = if (targetStatus == TriageStatus.TRASH_VAULT) photo.fileSizeBytes else 0L
                 val nextCount = cur.completedCount + 1
+                val finished = nextCount >= cur.targetCount
                 _sprintState.value = cur.copy(
                     completedCount = nextCount,
                     recoveredBytesInSprint = cur.recoveredBytesInSprint + addedBytes,
-                    isActive = nextCount < cur.targetCount
+                    isActive = !finished
                 )
-                if (nextCount >= cur.targetCount) {
+                if (finished) {
                     sprintTimerJob?.cancel()
-                    _statusMessage.value = "Cleanup Sprint Complete! Reviewed $nextCount items."
+                    _isSprintCompletionReceipt.value = true
+                    _showCleanupReceipt.value = true
+                    _statusMessage.value = "Nice work • $nextCount reviewed • ${formatBytes(cur.recoveredBytesInSprint + addedBytes)} cleaned"
                 }
             }
         }
@@ -362,45 +624,146 @@ class LuminaViewModel(
     fun batchMoveToVault(photos: List<PhotoEntity>, reasonLabel: String) {
         if (photos.isEmpty()) return
         viewModelScope.launch {
-            val prevMap = photos.associate { it.id to it.triageStatusEnum }
-            val movedCount = repository.triageBatchVerified(photos, TriageStatus.TRASH_VAULT)
-            val movedBytes = photos.sumOf { it.fileSizeBytes }
-            _sessionSavedBytes.value += movedBytes
-            _sessionReviewedCount.value += movedCount
-            _lastUndo.value = UndoTriageRecord(
-                photoIds = photos.map { it.id },
-                previousStatuses = prevMap,
-                description = "$reasonLabel ($movedCount moved to Review Bin)"
+            val outcome = repository.triageBatchVerified(
+                photos = photos,
+                newStatus = TriageStatus.TRASH_VAULT,
+                actionName = "batch_vault_$reasonLabel"
             )
-            _statusMessage.value = "Moved $movedCount item(s) (${formatBytes(movedBytes)}) to Review Bin."
+            val rejectedIds = outcome.auditEvents.map { it.requestedId }.toSet()
+            val verifiedPhotos = photos.filterNot { it.id in rejectedIds }
+
+            if (verifiedPhotos.isNotEmpty()) {
+                val movedBytes = verifiedPhotos.sumOf { it.fileSizeBytes }
+                _sessionSavedBytes.value += movedBytes
+                _sessionReviewedCount.value += verifiedPhotos.size
+                _sessionMovedToBinCount.value += verifiedPhotos.size
+                val isClusterCleanup = reasonLabel.contains("Cluster", ignoreCase = true)
+                val desc = if (isClusterCleanup) {
+                    "Cluster cleanup — ${verifiedPhotos.size} extras"
+                } else {
+                    "Review Bin — ${verifiedPhotos.size} items ($reasonLabel)"
+                }
+                pushUndoRecord(
+                    UndoTriageRecord(
+                        entries = verifiedPhotos.map { item ->
+                            VerifiedUndoEntry(
+                                photoId = item.id,
+                                expectedUri = item.uriString,
+                                previousStatus = item.triageStatusEnum
+                            )
+                        },
+                        description = desc,
+                        actionCategory = reasonLabel,
+                        bytesAffected = movedBytes
+                    )
+                )
+                _statusMessage.value = outcome.userRefreshNotice
+                    ?: "Moved ${verifiedPhotos.size} item(s) (${formatBytes(movedBytes)}) to Review Bin."
+            } else {
+                _statusMessage.value = outcome.userRefreshNotice
+                    ?: MediaIdentityVerifier.STALE_SINGLE_ITEM_NOTICE
+            }
         }
     }
 
     fun undoLastTriage() {
-        val record = _lastUndo.value ?: return
+        if (_undoHistory.value.isEmpty()) return
+        undoDecisionAt(0)
+    }
+
+    fun undoDecisionAt(index: Int) {
+        val stack = _undoHistory.value
+        if (index !in stack.indices) return
+        val record = stack[index]
+        _undoHistory.value = stack.toMutableList().also { it.removeAt(index) }
+
         viewModelScope.launch {
-            for ((photoId, prevStatus) in record.previousStatuses) {
-                repository.triagePhoto(photoId, prevStatus)
+            if (record.bestShotRevertClusterId != null && record.bestShotRevertPhotoId != null) {
+                val ok = repository.selectBestShotInCluster(
+                    clusterId = record.bestShotRevertClusterId,
+                    chosenBestPhotoId = record.bestShotRevertPhotoId
+                )
+                _statusMessage.value = if (ok) {
+                    "Undid: ${record.description}"
+                } else {
+                    MediaIdentityVerifier.STALE_SINGLE_ITEM_NOTICE
+                }
+            } else if (record.entries.isNotEmpty()) {
+                val outcome = repository.undoTriageVerified(record.entries)
+                _statusMessage.value = outcome.userRefreshNotice ?: "Undid: ${record.description}"
             }
-            _lastUndo.value = null
-            _statusMessage.value = "Undid: ${record.description}"
         }
     }
 
-    fun restoreFromVault(photoIds: List<Long>) {
-        if (photoIds.isEmpty()) return
+    fun restoreFromVault(photos: List<PhotoEntity>) {
+        if (photos.isEmpty()) return
         viewModelScope.launch {
-            repository.triageBatch(photoIds, TriageStatus.UNREVIEWED)
-            _statusMessage.value = "Restored ${photoIds.size} item(s) from Review Bin."
+            val outcome = repository.restoreVaultItemsVerified(photos)
+            _statusMessage.value = outcome.userRefreshNotice
+                ?: "Restored ${outcome.verifiedUpdatedCount} item(s) from Review Bin."
         }
     }
 
+    /**
+     * Initiates P0 permanent deletion via [MediaDeletionCoordinator]:
+     * - Never removes Room rows unless the underlying source file/URI is confirmed deleted.
+     * - Reports ONLY confirmed-deleted bytes.
+     * - If Android 11+ MediaStore requires a system confirmation dialog, emits [pendingSystemDeleteRequest].
+     * - Note: Confirmed permanent deletions NEVER enter the Undo stack.
+     */
     fun confirmTwoStepPermanentDelete(vaultPhotos: List<PhotoEntity>) {
         if (vaultPhotos.isEmpty()) return
         viewModelScope.launch {
-            val bytes = vaultPhotos.sumOf { it.fileSizeBytes }
-            val deletedCount = repository.permanentlyDeleteVaultItems(vaultPhotos)
-            _statusMessage.value = "Permanently deleted $deletedCount item(s) • Freed ${formatBytes(bytes)}."
+            when (val outcome = repository.executePermanentDelete(vaultPhotos)) {
+                is DeletionExecutionOutcome.Completed -> {
+                    applyDeletionResultBanner(outcome.result)
+                }
+                is DeletionExecutionOutcome.RequiresSystemDialog -> {
+                    _pendingSystemDelete.value = PendingSystemDeleteRequest(
+                        totalRequestedCount = vaultPhotos.size,
+                        intentSender = outcome.intentSender,
+                        pendingItems = outcome.pendingItems,
+                        partialDirectDeletedCount = outcome.partialDirectDeletedCount,
+                        partialDirectFreedBytes = outcome.partialDirectFreedBytes,
+                        preFailedItems = outcome.preFailedItems
+                    )
+                }
+            }
+        }
+    }
+
+    fun onSystemDeleteDialogResult(confirmedOk: Boolean) {
+        val pending = _pendingSystemDelete.value ?: return
+        _pendingSystemDelete.value = null
+        viewModelScope.launch {
+            val finalResult = repository.finalizeSystemDelete(
+                totalRequestedCount = pending.totalRequestedCount,
+                pendingItems = pending.pendingItems,
+                systemDialogConfirmedOk = confirmedOk,
+                partialDirectDeletedCount = pending.partialDirectDeletedCount,
+                partialDirectFreedBytes = pending.partialDirectFreedBytes,
+                preFailedItems = pending.preFailedItems
+            )
+            applyDeletionResultBanner(finalResult)
+        }
+    }
+
+    private fun applyDeletionResultBanner(result: DeletionResult) {
+        _lastDeletionResult.value = result
+        if (result.confirmedDeletedCount > 0) {
+            // Prune any undo history records referencing permanently deleted photo IDs
+            val remainingIds = uiState.value.allPhotos.map { it.id }.toSet()
+            _undoHistory.value = _undoHistory.value.filter { rec ->
+                rec.photoIds.all { it in remainingIds }
+            }
+        }
+        _statusMessage.value = when {
+            result.confirmedDeletedCount > 0 && result.failedCount == 0 ->
+                "${formatBytes(result.confirmedFreedBytes)} actually recovered (${result.confirmedDeletedCount} item(s) permanently deleted)."
+            result.confirmedDeletedCount > 0 && result.failedCount > 0 ->
+                "${formatBytes(result.confirmedFreedBytes)} actually recovered (${result.confirmedDeletedCount} deleted). ${result.failedCount} item(s) remain safely in Review Bin."
+            else ->
+                "No items were deleted (${result.failedCount} item(s) retained safely in Review Bin)."
         }
     }
 
@@ -413,22 +776,45 @@ class LuminaViewModel(
 
     fun markPhotoNotDuplicate(photo: PhotoEntity) {
         viewModelScope.launch {
-            repository.markPhotoNotDuplicate(photo)
-            _statusMessage.value = "Removed \"${photo.title}\" from duplicate group."
+            val ok = repository.markPhotoNotDuplicate(photo)
+            _statusMessage.value = if (ok) {
+                "Removed \"${photo.title}\" from duplicate group."
+            } else {
+                MediaIdentityVerifier.STALE_SINGLE_ITEM_NOTICE
+            }
         }
     }
 
     fun selectBestShotInCluster(clusterId: String, photoId: Long) {
         viewModelScope.launch {
-            repository.selectBestShotInCluster(clusterId, photoId)
-            _statusMessage.value = "Updated Best Shot selection."
+            val existingCluster = uiState.value.duplicateClusters.find { it.clusterId == clusterId }
+            val previousBestShot = existingCluster?.bestShot
+            val targetPhoto = existingCluster?.allMembers?.find { it.id == photoId }
+            val ok = repository.selectBestShotInCluster(clusterId, photoId)
+            if (ok) {
+                if (previousBestShot != null && previousBestShot.id != photoId) {
+                    pushUndoRecord(
+                        UndoTriageRecord(
+                            entries = emptyList(),
+                            description = "Best Shot — ${targetPhoto?.title ?: "#$photoId"}",
+                            actionCategory = "Manual Best Shot selection",
+                            bytesAffected = 0L,
+                            bestShotRevertClusterId = clusterId,
+                            bestShotRevertPhotoId = previousBestShot.id
+                        )
+                    )
+                }
+                _statusMessage.value = "Selected Best Shot: ${targetPhoto?.title ?: "Updated"}"
+            } else {
+                _statusMessage.value = MediaIdentityVerifier.STALE_SINGLE_ITEM_NOTICE
+            }
         }
     }
 
     fun startFiveMinuteSprint() {
         sprintTimerJob?.cancel()
         val unreviewedCount = uiState.value.activePhotos.count { it.triageStatusEnum == TriageStatus.UNREVIEWED }
-        val target = minOf(30, maxOf(5, unreviewedCount))
+        val target = minOf(25, maxOf(5, unreviewedCount))
         _sprintState.value = SprintSessionState(
             isActive = true,
             remainingSeconds = 300,
@@ -445,26 +831,81 @@ class LuminaViewModel(
                 delay(1000L)
                 val cur = _sprintState.value
                 if (!cur.isActive) break
-                _sprintState.value = cur.copy(remainingSeconds = (cur.remainingSeconds - 1).coerceAtLeast(0))
+                val nextSeconds = (cur.remainingSeconds - 1).coerceAtLeast(0)
+                _sprintState.value = cur.copy(
+                    remainingSeconds = nextSeconds,
+                    isActive = nextSeconds > 0
+                )
+                if (nextSeconds == 0) {
+                    _isSprintCompletionReceipt.value = true
+                    _showCleanupReceipt.value = true
+                }
             }
         }
     }
 
     fun stopSprintSession() {
         sprintTimerJob?.cancel()
-        _sprintState.value = _sprintState.value.copy(isActive = false)
+        val cur = _sprintState.value
+        _sprintState.value = cur.copy(isActive = false)
+        if (cur.completedCount > 0) {
+            _isSprintCompletionReceipt.value = true
+            _showCleanupReceipt.value = true
+        }
     }
 
     fun updateGoalTargetMb(megabytes: Int) {
-        _goalTargetMb.value = megabytes.coerceIn(5, 500)
+        _goalTargetMb.value = megabytes.coerceIn(50, 10_000)
     }
 
     fun createNaturalLanguageRule(prompt: String) {
         if (prompt.isBlank()) return
         viewModelScope.launch {
             val created = repository.addNaturalLanguageRule(prompt)
-            _statusMessage.value = "Created automation: ${created.title}"
+            _statusMessage.value = "Saved automation: ${created.title}"
         }
+    }
+
+    /**
+     * Generates a structured Natural-Language Cleanup Plan preview (Pass 3 Sections I & J)
+     * without immediately deleting anything.
+     */
+    fun previewNaturalLanguageCleanupPlan(prompt: String) {
+        if (prompt.isBlank()) return
+        val plan = AiWorkflowsAndUsageEngine.generateCleanupPlan(
+            naturalQuery = prompt,
+            allPhotos = uiState.value.allPhotos
+        )
+        _activeNaturalCleanupPlan.value = plan
+    }
+
+    fun dismissNaturalCleanupPlan() {
+        _activeNaturalCleanupPlan.value = null
+    }
+
+    fun reviewNaturalCleanupPlan(plan: NaturalLanguageCleanupPlan) {
+        _activeNaturalCleanupPlan.value = null
+        if (plan.candidates.isNotEmpty()) {
+            openCustomReviewSet(title = plan.title, photos = plan.candidates)
+        } else {
+            _statusMessage.value = "No matching items to review for \"${plan.title}\"."
+        }
+    }
+
+    fun saveCleanupPlanAsAutomation(plan: NaturalLanguageCleanupPlan) {
+        viewModelScope.launch {
+            val created = repository.addNaturalLanguageRule(plan.rawPrompt)
+            _activeNaturalCleanupPlan.value = null
+            _statusMessage.value = "Saved automation: ${created.title}"
+        }
+    }
+
+    fun openHomeSuggestionInReview(suggestion: AiHomeSuggestion) {
+        if (suggestion.candidatePhotos.isEmpty()) return
+        openCustomReviewSet(
+            title = suggestion.title,
+            photos = suggestion.candidatePhotos
+        )
     }
 
     fun toggleCleanupRule(rule: CleanupRuleEntity) {
@@ -490,10 +931,53 @@ class LuminaViewModel(
     fun inspectSinglePhotoWithAi(photo: PhotoEntity) {
         viewModelScope.launch {
             _isScanning.value = true
-            val updated = repository.inspectPhotoWithByokAi(photo, uiState.value.totalApiSpendUsd)
+            val updated = repository.inspectPhotoWithByokAi(photo)
             _isScanning.value = false
-            _statusMessage.value = "Analyzed ${updated.title}"
+            _statusMessage.value = if (updated != null) {
+                "Analyzed ${updated.title}"
+            } else {
+                MediaIdentityVerifier.STALE_SINGLE_ITEM_NOTICE
+            }
         }
+    }
+
+    /**
+     * Initiates a batch AI pass. If cloud AI is active and the user hasn't opted to skip the
+     * Privacy Preview dialog, presents [AiPrivacyPreview] first (Pass 3 Section H).
+     */
+    fun requestBatchByokAiPass() {
+        val unreviewed = uiState.value.activePhotos.filter { it.triageStatusEnum == TriageStatus.UNREVIEWED }
+        if (unreviewed.isEmpty()) {
+            _statusMessage.value = "No unreviewed items need AI inspection."
+            return
+        }
+        val cfg = _aiConfig.value
+        val hasKey = repository.hasSecretKeyFor(cfg.activeProvider) || cfg.customApiKey.isNotBlank()
+        if (cfg.privacyMode != PrivacyMode.LOCAL_ONLY && hasKey && !cfg.skipPrivacyPreviewDialog) {
+            _pendingPrivacyPreview.value = repository.aiAdapterLayer.buildPrivacyPreview(
+                photos = unreviewed,
+                config = cfg,
+                maxBatchSize = 12
+            )
+        } else {
+            runBatchByokAiPass()
+        }
+    }
+
+    fun dismissPrivacyPreview() {
+        _pendingPrivacyPreview.value = null
+    }
+
+    fun confirmPrivacyPreviewAndAnalyze(rememberConsent: Boolean = false) {
+        _pendingPrivacyPreview.value = null
+        if (rememberConsent) {
+            val updatedCfg = _aiConfig.value.copy(skipPrivacyPreviewDialog = true)
+            viewModelScope.launch {
+                repository.saveAiConfig(updatedCfg)
+                _aiConfig.value = updatedCfg
+            }
+        }
+        runBatchByokAiPass()
     }
 
     fun runBatchByokAiPass() {
@@ -502,7 +986,7 @@ class LuminaViewModel(
             if (unreviewed.isEmpty()) return@launch
             _isScanning.value = true
             _statusMessage.value = "Running AI analysis on ${minOf(12, unreviewed.size)} items..."
-            val count = repository.runBatchAiInspection(unreviewed, uiState.value.totalApiSpendUsd)
+            val count = repository.runBatchAiInspection(unreviewed)
             _isScanning.value = false
             _statusMessage.value = "AI analysis complete for $count items."
         }
@@ -511,7 +995,7 @@ class LuminaViewModel(
     fun clearEncryptedCache() {
         viewModelScope.launch {
             repository.clearEncryptedAnalysisCache()
-            _statusMessage.value = "Cleared analysis cache (API keys & rules preserved)."
+            _statusMessage.value = "Cleared analysis cache (API keys & automations preserved)."
         }
     }
 
@@ -522,15 +1006,35 @@ class LuminaViewModel(
     suspend fun fetchEndpointModels(
         rawEndpoint: String,
         provider: AiProviderType,
-        apiKeyOverride: String
+        apiKeyOverride: String,
+        forceRefresh: Boolean = false
     ): com.example.domain.ai.EndpointModelCatalogResult {
-        return repository.fetchAvailableModels(rawEndpoint, provider, apiKeyOverride)
+        return repository.fetchAvailableModels(rawEndpoint, provider, apiKeyOverride, forceRefresh)
+    }
+
+    suspend fun testAiConnection(
+        config: AiAdapterConfig,
+        catalogOverride: com.example.domain.ai.EndpointModelCatalogResult? = null
+    ): AiConnectionTestResult {
+        return repository.testAiConnection(config, catalogOverride)
     }
 
     private fun buildSmartBatches(activePhotos: List<PhotoEntity>): List<SmartCleanupBatch> {
         val unreviewed = activePhotos.filter { it.triageStatusEnum == TriageStatus.UNREVIEWED }
 
-        val duplicateExtras = unreviewed.filter {
+        val exactDuplicates = unreviewed.filter {
+            it.duplicateClusterId != null &&
+                !it.isBestShotInCluster &&
+                it.clusterTypeEnum == MediaClusterType.EXACT_DUPLICATE
+        }
+
+        val similarPhotos = unreviewed.filter {
+            it.duplicateClusterId != null &&
+                !it.isBestShotInCluster &&
+                it !in exactDuplicates
+        }
+
+        val allDuplicateExtras = unreviewed.filter {
             it.duplicateClusterId != null && !it.isBestShotInCluster
         }
 
@@ -554,26 +1058,48 @@ class LuminaViewModel(
                 it.screenshotSubTypeEnum.isImportantDefault
         }
 
+        val dupGroupPhotos = if (exactDuplicates.isNotEmpty()) exactDuplicates else allDuplicateExtras
+
         return listOfNotNull(
             SmartCleanupBatch(
                 id = "queue_duplicates",
-                title = "Duplicates & Similar",
-                subtitle = "${duplicateExtras.size} extra shots • Best shots safely kept",
-                badgeText = formatBytes(duplicateExtras.sumOf { it.fileSizeBytes }),
+                title = "Duplicates",
+                subtitle = "${dupGroupPhotos.size} extra shots • Best shots safely kept",
+                badgeText = formatBytes(dupGroupPhotos.sumOf { it.fileSizeBytes }),
                 spineColorHex = 0xFF168BFF,
-                photos = duplicateExtras,
-                totalBytes = duplicateExtras.sumOf { it.fileSizeBytes },
-                averageConfidence = 0.90f
+                photos = dupGroupPhotos,
+                totalBytes = dupGroupPhotos.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.92f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
                 id = "queue_old_screenshots",
                 title = "Screenshots",
-                subtitle = "${screenshots.size} screen captures ready to clean",
+                subtitle = "${screenshots.size} screen captures ready to review",
                 badgeText = formatBytes(screenshots.sumOf { it.fileSizeBytes }),
                 spineColorHex = 0xFF38BDF8,
                 photos = screenshots,
                 totalBytes = screenshots.sumOf { it.fileSizeBytes },
                 averageConfidence = 0.88f
+            ).takeIf { it.photos.isNotEmpty() },
+            SmartCleanupBatch(
+                id = "queue_similar",
+                title = "Similar Photos",
+                subtitle = "${similarPhotos.size} near-duplicate or burst variations",
+                badgeText = formatBytes(similarPhotos.sumOf { it.fileSizeBytes }),
+                spineColorHex = 0xFF2DD4BF,
+                photos = similarPhotos,
+                totalBytes = similarPhotos.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.86f
+            ).takeIf { it.photos.isNotEmpty() },
+            SmartCleanupBatch(
+                id = "queue_blurry",
+                title = "Blurry",
+                subtitle = "${blurryPhotos.size} low-sharpness or misfocused shots",
+                badgeText = formatBytes(blurryPhotos.sumOf { it.fileSizeBytes }),
+                spineColorHex = 0xFFE5484D,
+                photos = blurryPhotos,
+                totalBytes = blurryPhotos.sumOf { it.fileSizeBytes },
+                averageConfidence = 0.94f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
                 id = "queue_videos",
@@ -583,22 +1109,12 @@ class LuminaViewModel(
                 spineColorHex = 0xFF818CF8,
                 photos = videoItems,
                 totalBytes = videoItems.sumOf { it.fileSizeBytes },
-                averageConfidence = 0.76f
-            ).takeIf { it.photos.isNotEmpty() },
-            SmartCleanupBatch(
-                id = "queue_blurry",
-                title = "Blurry Photos",
-                subtitle = "${blurryPhotos.size} low-sharpness or misfocused shots",
-                badgeText = formatBytes(blurryPhotos.sumOf { it.fileSizeBytes }),
-                spineColorHex = 0xFFE5484D,
-                photos = blurryPhotos,
-                totalBytes = blurryPhotos.sumOf { it.fileSizeBytes },
-                averageConfidence = 0.94f
+                averageConfidence = 0.78f
             ).takeIf { it.photos.isNotEmpty() },
             SmartCleanupBatch(
                 id = "queue_receipts_protected",
-                title = "Documents & Downloads",
-                subtitle = "${downloadsAndDocs.size} receipts, documents & saved files",
+                title = "Documents",
+                subtitle = "${downloadsAndDocs.size} receipts, documents & downloads",
                 badgeText = formatBytes(downloadsAndDocs.sumOf { it.fileSizeBytes }),
                 spineColorHex = 0xFF10B981,
                 photos = downloadsAndDocs,
@@ -616,34 +1132,47 @@ class LuminaViewModel(
             .filter { it.size > 1 }
             .map { members ->
                 val sorted = members.sortedWith(
-                    compareByDescending<PhotoEntity> { if (it.isBestShotInCluster) 1 else 0 }
+                    compareByDescending<PhotoEntity> { if (it.userSelectedBestShot) 1 else 0 }
+                        .thenByDescending { if (it.isBestShotInCluster) 1 else 0 }
                         .thenByDescending { it.overallQualityScore }
                         .thenByDescending { it.sharpnessScore }
                 )
                 val best = sorted.first()
                 val redundant = sorted.drop(1)
-                val customTitle = members.firstNotNullOfOrNull {
-                    it.clusterTitleOverride.takeIf { t -> t.isNotBlank() }
-                }
-                val dateSuffix = best.shortDateLabel.let { if (it.isNotBlank()) " • $it" else "" }
-                val defaultTitle = when {
-                    best.isVideo -> "Similar Videos$dateSuffix (${members.size})"
-                    best.categoryEnum == PhotoCategory.SCREENSHOT -> "Similar Screenshots$dateSuffix (${members.size})"
-                    else -> "${best.folderName.ifBlank { "Photo" }} Burst$dateSuffix (${members.size})"
-                }
+                val clusterId = best.duplicateClusterId ?: "cluster"
+                val classified = CandidateIndexEngine.classifyCluster(clusterId, sorted, best)
+                val resolvedType = best.clusterTypeEnum ?: classified.type
+                val resolvedConfidence = best.clusterConfidence.takeIf { it > 0f } ?: classified.confidence
+                val resolvedReason = best.clusterReason.ifBlank { classified.reason }
+
+                val descriptiveTitle = AiWorkflowsAndUsageEngine.generateDescriptiveClusterTitle(
+                    members = sorted,
+                    clusterType = resolvedType
+                )
+                val bestShotExplanations = AiWorkflowsAndUsageEngine.formatUserFacingBestShotExplanations(
+                    bestShot = best,
+                    clusterMembers = sorted
+                )
                 DuplicateClusterGroup(
-                    clusterId = best.duplicateClusterId ?: "cluster",
-                    title = customTitle ?: defaultTitle,
+                    clusterId = clusterId,
+                    title = descriptiveTitle,
                     bestShot = best,
                     redundantVariants = redundant,
                     allMembers = sorted,
-                    recoverableBytes = redundant.sumOf { it.fileSizeBytes }
+                    recoverableBytes = redundant.sumOf { it.fileSizeBytes },
+                    type = resolvedType,
+                    confidence = resolvedConfidence,
+                    reason = resolvedReason,
+                    bestShotExplanations = bestShotExplanations,
+                    clusterGenerationVersion = best.clusterGenerationVersion
                 )
             }
             .sortedByDescending { it.recoverableBytes }
     }
 
     companion object {
+        private const val MAX_UNDO_HISTORY_SIZE = 50
+
         fun formatBytes(bytes: Long): String {
             if (bytes <= 0L) return "0 MB"
             val mb = bytes.toDouble() / (1024.0 * 1024.0)

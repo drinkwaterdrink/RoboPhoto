@@ -69,6 +69,9 @@ object NaturalLanguageRuleEngine {
         if (lower.contains("2023")) {
             minAgeDays = maxOf(minAgeDays, 365)
         }
+        if (minAgeDays == 0 && (lower.contains("old screenshot") || lower.contains("old video") || lower.contains("old photo"))) {
+            minAgeDays = 90
+        }
 
         // 2. Parse Target Categories
         val categories = mutableSetOf<PhotoCategory>()
@@ -90,9 +93,12 @@ object NaturalLanguageRuleEngine {
             categories += PhotoCategory.RECEIPT
         }
 
-        // 3. Parse Exclusions ("unless they contain ...", "excluding ...", "except ...", "don't contain ...")
+        // 3. Parse Exclusions ("unless they contain ...", "excluding ...", "except ...", "don't contain ...", "aren't important", "don't need")
         val excludedKeywords = mutableSetOf<String>()
-        val exclusionSplit = lower.split("unless", "exclud", "except", "without", "don't contain", "do not contain")
+        val exclusionSplit = lower.split(
+            "unless", "exclud", "except", "without", "don't contain", "do not contain",
+            "aren't important", "are not important", "not important", "don't need", "do not need"
+        )
         if (exclusionSplit.size > 1) {
             val exclusionClause = exclusionSplit.drop(1).joinToString(" ")
             val candidateExclusions = listOf(
@@ -104,7 +110,14 @@ object NaturalLanguageRuleEngine {
                     excludedKeywords += kw
                 }
             }
-            if (exclusionClause.contains("anything important")) {
+            if (
+                exclusionClause.contains("anything important") ||
+                lower.contains("aren't important") ||
+                lower.contains("are not important") ||
+                lower.contains("not important") ||
+                lower.contains("don't need") ||
+                lower.contains("do not need")
+            ) {
                 excludedKeywords.addAll(listOf("receipt", "password", "address", "confirmation", "conversation", "serial"))
             }
         }
@@ -118,12 +131,41 @@ object NaturalLanguageRuleEngine {
         if (lower.contains("outside") || lower.contains("outdoor")) requiredKeywords += "outside"
         if (lower.contains("serial")) requiredKeywords += "serial"
 
-        // 5. Parse Duplicate / Sharpness Flags
+        // 5. Parse Duplicate / Sharpness / Size / Duration Flags
         val onlyDuplicates = lower.contains("duplicate") || lower.contains("similar") || lower.contains("burst")
         val maxSharpness = if (lower.contains("blur")) 45 else null
 
+        var minFileSizeBytes = 0L
+        val mbRegex = Regex("""(?:over|larger than|bigger than|at least|>)\s*(\d+)\s*mb""")
+        val gbRegex = Regex("""(?:over|larger than|bigger than|at least|>)\s*(\d+)\s*gb""")
+        mbRegex.find(lower)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { mb ->
+            minFileSizeBytes = mb * 1024L * 1024L
+        }
+        gbRegex.find(lower)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { gb ->
+            minFileSizeBytes = gb * 1024L * 1024L * 1024L
+        }
+
+        var minDurationMs = 0L
+        var maxDurationMs: Long? = null
+        val minMinutesRegex = Regex("""(?:longer than|over|at least|>)\s*(\d+)\s*(?:minute|min)""")
+        val minSecondsRegex = Regex("""(?:longer than|over|at least|>)\s*(\d+)\s*(?:second|sec)""")
+        val maxSecondsRegex = Regex("""(?:shorter than|under|less than|<)\s*(\d+)\s*(?:second|sec)""")
+        minMinutesRegex.find(lower)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { mins ->
+            minDurationMs = mins * 60_000L
+        }
+        minSecondsRegex.find(lower)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { secs ->
+            minDurationMs = maxOf(minDurationMs, secs * 1_000L)
+        }
+        maxSecondsRegex.find(lower)?.groupValues?.getOrNull(1)?.toLongOrNull()?.let { secs ->
+            maxDurationMs = secs * 1_000L
+        }
+
         // Build concise title
         val title = when {
+            categories.contains(PhotoCategory.VIDEO) && minFileSizeBytes > 0L ->
+                "Videos > ${minFileSizeBytes / (1024 * 1024)} MB"
+            categories.contains(PhotoCategory.VIDEO) && minDurationMs > 0L ->
+                "Videos > ${minDurationMs / 1000}s"
             categories.contains(PhotoCategory.SCREENSHOT) && minAgeDays > 0 ->
                 "Screenshots > ${minAgeDays}d (Safe Exclusions)"
             onlyDuplicates && categories.contains(PhotoCategory.PLANT) ->
@@ -146,7 +188,10 @@ object NaturalLanguageRuleEngine {
             maxSharpnessScore = maxSharpness,
             onlyNonBestDuplicates = onlyDuplicates,
             minJunkConfidence = 0.30f,
-            isEnabled = true
+            isEnabled = true,
+            minFileSizeBytes = minFileSizeBytes,
+            minDurationMs = minDurationMs,
+            maxDurationMs = maxDurationMs
         )
     }
 
@@ -184,8 +229,11 @@ object NaturalLanguageRuleEngine {
             if (photo.ageInDays < rule.minAgeDays) continue
             if (rule.maxAgeDays != null && photo.ageInDays > rule.maxAgeDays) continue
 
-            // 3. Sharpness check
+            // 3. Sharpness, file size, and duration checks
             if (rule.maxSharpnessScore != null && photo.sharpnessScore > rule.maxSharpnessScore) continue
+            if (rule.minFileSizeBytes > 0L && photo.fileSizeBytes < rule.minFileSizeBytes) continue
+            if (rule.minDurationMs > 0L && photo.durationMs < rule.minDurationMs) continue
+            if (rule.maxDurationMs != null && photo.durationMs > rule.maxDurationMs) continue
 
             // 4. Required keywords check
             val searchableBlob = "${photo.title} ${photo.folderName} ${photo.ocrText} ${photo.aiDescription} ${photo.semanticTags}".lowercase()
@@ -293,49 +341,68 @@ object NaturalLanguageRuleEngine {
                 !it.sentimentalProtected
         }
 
-        val tier1 = candidates.filter {
-            it.categoryEnum == PhotoCategory.BLURRY ||
-                it.screenshotSubTypeEnum == ScreenshotSubType.TEMPORARY_OTP
-        }.sortedByDescending { it.junkConfidence }
-
-        val tier2 = candidates.filter {
-            it !in tier1 && it.duplicateClusterId != null && !it.isBestShotInCluster
+        val exactAndClusterDuplicates = candidates.filter {
+            it.duplicateClusterId != null && !it.isBestShotInCluster
         }.sortedBy { it.sharpnessScore }
 
-        val tier3 = candidates.filter {
-            it !in tier1 && it !in tier2 &&
-                (it.categoryEnum == PhotoCategory.SCREENSHOT || it.categoryEnum == PhotoCategory.MEME || it.categoryEnum == PhotoCategory.VIDEO) &&
+        val blurryShots = candidates.filter {
+            it !in exactAndClusterDuplicates &&
+                !it.isVideo &&
+                (it.categoryEnum == PhotoCategory.BLURRY || it.sharpnessScore < 42)
+        }.sortedByDescending { it.junkConfidence }
+
+        val tempScreenshots = candidates.filter {
+            it !in exactAndClusterDuplicates &&
+                it !in blurryShots &&
+                (it.categoryEnum == PhotoCategory.SCREENSHOT ||
+                    it.categoryEnum == PhotoCategory.MEME ||
+                    it.screenshotSubTypeEnum == ScreenshotSubType.TEMPORARY_OTP) &&
                 !it.screenshotSubTypeEnum.isImportantDefault
+        }.sortedByDescending { it.junkConfidence }
+
+        val largeVideos = candidates.filter {
+            it !in exactAndClusterDuplicates &&
+                it !in blurryShots &&
+                it !in tempScreenshots &&
+                (it.isVideo || it.categoryEnum == PhotoCategory.VIDEO)
         }.sortedByDescending { it.fileSizeBytes }
 
         val tiers = listOf(
             GoalCleanupTier(
                 tierNumber = 1,
-                title = "Tier 1 • Defocused Duds & Expired 2FA",
-                riskBadge = "Zero Sentimental Risk",
-                description = "Blurry pocket shots and expired OTP codes older than 6 months.",
-                photos = tier1,
-                bytesRecoverable = tier1.sumOf { it.fileSizeBytes }
+                title = "Exact duplicates",
+                riskBadge = "Best-Shot Preserved",
+                description = "Extra duplicate & burst frames where a sharper Best Shot is already kept.",
+                photos = exactAndClusterDuplicates,
+                bytesRecoverable = exactAndClusterDuplicates.sumOf { it.fileSizeBytes }
             ),
             GoalCleanupTier(
                 tierNumber = 2,
-                title = "Tier 2 • Redundant Burst Duplicates",
-                riskBadge = "Best-Shot Preserved",
-                description = "Secondary burst frames where a sharper Best-Shot is already locked.",
-                photos = tier2,
-                bytesRecoverable = tier2.sumOf { it.fileSizeBytes }
+                title = "Blurry shots",
+                riskBadge = "Zero Sentimental Risk",
+                description = "Out-of-focus pocket shots and motion-blurred frames.",
+                photos = blurryShots,
+                bytesRecoverable = blurryShots.sumOf { it.fileSizeBytes }
             ),
             GoalCleanupTier(
                 tierNumber = 3,
-                title = "Tier 3 • Ephemeral Screenshots & Memes",
+                title = "Temporary screenshots",
                 riskBadge = "OCR Verified Safe",
-                description = "Old system UI screenshots & memes with zero receipts or passwords.",
-                photos = tier3,
-                bytesRecoverable = tier3.sumOf { it.fileSizeBytes }
+                description = "Old temporary screenshots & memes with receipts and passwords excluded.",
+                photos = tempScreenshots,
+                bytesRecoverable = tempScreenshots.sumOf { it.fileSizeBytes }
+            ),
+            GoalCleanupTier(
+                tierNumber = 4,
+                title = "Large videos",
+                riskBadge = "High Space Recovery",
+                description = "Large video clips ready for quick storyboard review.",
+                photos = largeVideos,
+                bytesRecoverable = largeVideos.sumOf { it.fileSizeBytes }
             )
         )
 
-        val orderedPool = tier1 + tier2 + tier3
+        val orderedPool = exactAndClusterDuplicates + blurryShots + tempScreenshots + largeVideos
         val selected = mutableListOf<PhotoEntity>()
         var runningBytes = 0L
         for (photo in orderedPool) {

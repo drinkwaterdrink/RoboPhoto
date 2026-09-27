@@ -20,16 +20,16 @@ import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
- * Hardware-backed AES-256-GCM Local Encrypted Cache for:
- * 1) Perceptual hash (dHash/pHash) + Laplacian sharpness + exposure metrics per image URI/mtime
+ * AES-256-GCM Local Encrypted Cache for:
+ * 1) Perceptual hash (dHash/pHash) + Laplacian sharpness + exposure metrics per image revision
  * 2) Multimodal AI inspection & OCR results keyed by perceptual hash so duplicate scans cost 0 tokens
- * 3) BYOK API keys, custom endpoints, downscaling policies, and monthly USD budget caps
+ * 3) BYOK API keys and custom endpoint profiles (explicitly excluded from Android Auto Backup & Device Transfer)
  */
 class EncryptedMediaCache(private val context: Context) {
 
     private val mutex = Mutex()
     private val memoryCache = ConcurrentHashMap<String, String>()
-    private val cacheFile = File(context.filesDir, "lumina_encrypted_vault_v1.bin")
+    private val cacheFile = File(context.filesDir, VAULT_FILE_NAME)
 
     @Volatile
     var cacheHits: Int = 0
@@ -39,19 +39,26 @@ class EncryptedMediaCache(private val context: Context) {
     var cacheMisses: Int = 0
         private set
 
+    @Volatile
+    var isHardwareKeystoreBacked: Boolean = false
+        private set
+
     private val secretKey: SecretKey by lazy {
-        getOrCreateHardwareOrFallbackKey()
+        getOrCreateKeystoreOrFallbackKey()
     }
 
     init {
         loadFromDiskSync()
+        // Remove any legacy budget key if present from older builds
+        memoryCache.remove("byok_budget_usd")
     }
 
-    private fun getOrCreateHardwareOrFallbackKey(): SecretKey {
+    private fun getOrCreateKeystoreOrFallbackKey(): SecretKey {
         return try {
             val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
             val existingKey = keyStore.getKey(KEY_ALIAS, null) as? SecretKey
             if (existingKey != null) {
+                isHardwareKeystoreBacked = true
                 existingKey
             } else {
                 val keyGenerator = KeyGenerator.getInstance(
@@ -67,11 +74,13 @@ class EncryptedMediaCache(private val context: Context) {
                     .setKeySize(256)
                     .build()
                 keyGenerator.init(spec)
-                keyGenerator.generateKey()
+                val generated = keyGenerator.generateKey()
+                isHardwareKeystoreBacked = true
+                generated
             }
         } catch (_: Exception) {
-            // Fallback for local JVM / Robolectric unit test environments where AndroidKeyStore isn't mounted
-            val prefs = context.getSharedPreferences("lumina_fallback_key", Context.MODE_PRIVATE)
+            isHardwareKeystoreBacked = false
+            val prefs = context.getSharedPreferences(FALLBACK_PREFS_NAME, Context.MODE_PRIVATE)
             val existingBase64 = prefs.getString("aes_raw", null)
             val keyBytes = if (existingBase64 != null) {
                 Base64.decode(existingBase64, Base64.NO_WRAP)
@@ -85,12 +94,24 @@ class EncryptedMediaCache(private val context: Context) {
         }
     }
 
+    /**
+     * Accurately reports whether encryption uses Android Keystore or local app-private fallback storage.
+     */
+    fun securityStorageDescription(): String {
+        // Trigger lazy key initialization if not yet accessed
+        secretKey.algorithm
+        return if (isHardwareKeystoreBacked) {
+            "Encrypted with Android Keystore AES-256-GCM key (excluded from cloud backup)."
+        } else {
+            "Encrypted with app-private local AES-256-GCM key (excluded from cloud backup)."
+        }
+    }
+
     private fun encryptBytes(plainBytes: ByteArray): ByteArray {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey)
         val iv = cipher.iv
         val cipherText = cipher.doFinal(plainBytes)
-        // Format: [1 byte IV length][IV bytes][CipherText]
         val output = ByteArray(1 + iv.size + cipherText.size)
         output[0] = iv.size.toByte()
         System.arraycopy(iv, 0, output, 1, iv.size)
@@ -121,7 +142,6 @@ class EncryptedMediaCache(private val context: Context) {
                 memoryCache[k] = json.optString(k, "")
             }
         } catch (_: Exception) {
-            // Reset corrupted cache gracefully
             memoryCache.clear()
         }
     }
@@ -154,6 +174,11 @@ class EncryptedMediaCache(private val context: Context) {
 
     fun peekWithoutStats(key: String): String? = memoryCache[key]
 
+    suspend fun remove(key: String) {
+        memoryCache.remove(key)
+        persistToDisk()
+    }
+
     suspend fun put(key: String, value: String) {
         memoryCache[key] = value
         persistToDisk()
@@ -165,7 +190,7 @@ class EncryptedMediaCache(private val context: Context) {
     }
 
     suspend fun clearAnalysisCacheKeepKeys() {
-        val keysToKeep = memoryCache.filterKeys { it.startsWith("byok_") }
+        val keysToKeep = memoryCache.filterKeys { it.startsWith("byok_") && it != "byok_budget_usd" }
         memoryCache.clear()
         memoryCache.putAll(keysToKeep)
         cacheHits = 0
@@ -184,5 +209,19 @@ class EncryptedMediaCache(private val context: Context) {
 
     companion object {
         private const val KEY_ALIAS = "lumina_clean_aes256_master_key"
+        const val VAULT_FILE_NAME = "lumina_encrypted_vault_v1.bin"
+        const val FALLBACK_PREFS_NAME = "lumina_fallback_key"
+
+        /**
+         * Returns a masked representation of an API key so full secrets are never displayed or logged.
+         */
+        fun maskApiKey(rawKey: String): String {
+            val trimmed = rawKey.trim()
+            if (trimmed.isEmpty()) return "Not configured"
+            if (trimmed.length <= 8) return "••••••••"
+            val prefix = trimmed.take(3)
+            val suffix = trimmed.takeLast(4)
+            return "$prefix••••••••$suffix"
+        }
     }
 }
